@@ -1,14 +1,9 @@
-name: Deploy to racelab server
+name: Deploy to DreamHost
 
 on:
   push:
     branches:
       - main
-  workflow_dispatch:
-
-concurrency:
-  group: deploy-production
-  cancel-in-progress: false
 
 jobs:
   deploy:
@@ -20,9 +15,9 @@ jobs:
       - name: Deploy via rsync
         uses: burnett01/rsync-deployments@7.0.1
         with:
-          switches: -avz --delete --exclude='.git' --exclude='.github' --exclude='README.md'
+          switches: -avz --delete --exclude='.git' --exclude='.github'
           path: ./
           remote_path: /home/romafederico/romafederico.com/
-          remote_host: ${{ secrets.DEPLOY_HOST }}
-          remote_user: ${{ secrets.DEPLOY_USER }}
-          remote_key: ${{ secrets.DEPLOY_SSH_KEY }}
+          remote_host: pdx1-shared-a1-22.dreamhost.com
+          remote_user: romafederico
+          remote_key: ${{ secrets.DREAMHOST_SSH_KEY }}

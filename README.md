@@ -4,18 +4,14 @@ Personal consulting site for Federico Roma. Pure HTML + CSS, no build step.
 
 ## Deployment
 
-On push to `main`, GitHub Actions rsyncs the repo to the racelab server at
-`/home/romafederico/romafederico.com/`. Nginx on the racelab stack serves it at
-the `/romafederico/` route. See `racelab/nginx/racelab.conf` in the racelab repo
-for the location block and volume mount.
+On push to `main`, GitHub Actions rsyncs the repo to DreamHost at
+`/home/romafederico/romafederico.com/`. Mirrors the marielgaribaldi.com
+deployment setup.
 
-### Required GitHub secrets
+### Required GitHub secret
 
-Reuse the racelab repo's deploy key:
-
-- `DEPLOY_HOST` — `66.179.251.96`
-- `DEPLOY_USER` — `romafederico`
-- `DEPLOY_SSH_KEY` — private SSH key
+- `DREAMHOST_SSH_KEY` — private SSH key for the `romafederico` user on
+  `pdx1-shared-a1-22.dreamhost.com`.
 
 ## Local preview
 
