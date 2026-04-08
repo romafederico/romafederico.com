@@ -1,4 +1,4 @@
-/* Federico Roma — pure CSS, no framework. Karpathy-minimal, single column, content-first. */
+/* Federico Roma — pure CSS, no framework. Light theme, single column, content-first. */
 
 :root {
   --fg: #1a1a1a;
@@ -6,6 +6,7 @@
   --bg: #ffffff;
   --link: #0b5fff;
   --rule: #e5e5e5;
+  --dot: #bdbdbd;
   --max: 680px;
 }
 
@@ -35,6 +36,17 @@ a:hover { text-decoration: underline; }
 
 header {
   margin-bottom: 2.5rem;
+  text-align: center;
+}
+
+.avatar {
+  display: block;
+  width: 160px;
+  height: 160px;
+  margin: 0 auto 1.25rem;
+  border-radius: 50%;
+  object-fit: cover;
+  background: #f2f2f2;
 }
 
 h1 {
@@ -67,42 +79,82 @@ section > p {
 h2 {
   font-size: 1.15rem;
   font-weight: 600;
-  margin: 0 0 1rem;
+  margin: 0 0 1.25rem;
   padding-bottom: .35rem;
   border-bottom: 1px solid var(--rule);
 }
 
 h3 {
-  font-size: 1.02rem;
+  font-size: 1rem;
   font-weight: 600;
-  margin: 0 0 .15rem;
-}
-
-article {
-  margin: 0 0 1.75rem;
-}
-
-.meta {
-  margin: 0 0 .5rem;
-  color: var(--muted);
-  font-size: .9rem;
-}
-
-.stack {
-  margin: .5rem 0 0;
-  color: var(--muted);
-  font-size: .88rem;
-}
-.stack em {
-  font-style: normal;
-  color: var(--fg);
+  margin: 0 0 .35rem;
 }
 
 ul {
   margin: 0 0 1rem;
   padding-left: 1.25rem;
 }
-li { margin-bottom: .5rem; }
+ul li { margin-bottom: .5rem; }
+
+/* Vertical timeline */
+.timeline {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  position: relative;
+}
+
+.timeline::before {
+  content: "";
+  position: absolute;
+  left: 7px;
+  top: 6px;
+  bottom: 6px;
+  width: 2px;
+  background: var(--rule);
+}
+
+.timeline > li {
+  position: relative;
+  padding: 0 0 1.75rem 2rem;
+}
+
+.timeline > li:last-child {
+  padding-bottom: 0;
+}
+
+.timeline > li::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 6px;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: var(--bg);
+  border: 2px solid var(--dot);
+}
+
+.timeline > li:first-child::before {
+  background: var(--link);
+  border-color: var(--link);
+}
+
+.timeline .when {
+  margin: 0 0 .15rem;
+  color: var(--muted);
+  font-size: .82rem;
+  text-transform: uppercase;
+  letter-spacing: .04em;
+}
+
+.timeline p {
+  margin: 0;
+}
+
+.timeline h3 + p {
+  margin-top: .1rem;
+}
 
 footer {
   margin-top: 3.5rem;
@@ -110,19 +162,11 @@ footer {
   border-top: 1px solid var(--rule);
   color: var(--muted);
   font-size: .85rem;
-}
-
-@media (prefers-color-scheme: dark) {
-  :root {
-    --fg: #ececec;
-    --muted: #9a9a9a;
-    --bg: #111111;
-    --link: #6ea8ff;
-    --rule: #2a2a2a;
-  }
+  text-align: center;
 }
 
 @media (max-width: 480px) {
   main { padding: 2rem 1rem 3rem; }
   h1 { font-size: 1.6rem; }
+  .avatar { width: 128px; height: 128px; }
 }

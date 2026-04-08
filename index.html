@@ -11,6 +11,7 @@
 <main>
 
 <header>
+  <img class="avatar" src="avatar.jpg" alt="Federico Roma" width="160" height="160">
   <h1>Federico Roma</h1>
   <p class="tagline">Senior Software Consultant &mdash; Melbourne, Australia</p>
   <p class="contact">
@@ -29,10 +30,10 @@ hundreds of requests per second.
 </p>
 <p>
 I bring deep knowledge of AWS cloud architecture, microservices design, and modern stacks,
-combined with a proven ability to deliver under real-world constraints: legacy hardware integration,
-regulatory environments, tight deadlines, and distributed teams across time zones. I'm equally
-comfortable writing code, designing architecture, and aligning technical strategy with business
-objectives.
+combined with a proven ability to deliver under real-world constraints: legacy hardware
+integration, regulatory environments, tight deadlines, and distributed teams across time zones.
+I'm equally comfortable writing code, designing architecture, and aligning technical strategy
+with business objectives.
 </p>
 <p>
 Available for <strong>remote or hybrid</strong> contract engagements
@@ -46,151 +47,72 @@ Available for <strong>remote or hybrid</strong> contract engagements
   <li><strong>Cloud architecture</strong> &mdash; AWS (Lambda, ECS, Step Functions, RDS, DynamoDB, S3, VPC, CloudWatch). Terraform, CDK, CloudFormation.</li>
   <li><strong>Backend engineering</strong> &mdash; Node.js/TypeScript, Python/Django, Go. REST APIs and event-driven architectures at scale.</li>
   <li><strong>Frontend</strong> &mdash; React, Next.js. SSR, internationalisation, RTL.</li>
-  <li><strong>Payments &amp; identity</strong> &mdash; Airwallex integration, settlement flows, Auth0, AWS Cognito, government identity verification, criminal-history checks.</li>
+  <li><strong>Payments &amp; identity</strong> &mdash; Airwallex integration, settlement flows, Auth0, AWS Cognito, government identity verification.</li>
   <li><strong>Embedded &amp; devices</strong> &mdash; C++/Qt field devices, OTA updates over constrained legacy hardware, idempotent device&harr;API communication.</li>
   <li><strong>Technical leadership</strong> &mdash; Hiring, mentoring, aligning engineering with product and business, coordinating OEM and cross-border teams.</li>
 </ul>
 </section>
 
 <section>
-<h2>Experience</h2>
+<h2>Timeline</h2>
 
-<article>
-  <h3>Head of IT &middot; Eyerising International</h3>
-  <p class="meta">Jun 2023 &ndash; Present &middot; Melbourne</p>
-  <p>
-    Joined as employee #4 and first developer. Inherited a basic MERN prototype running on a single
-    EC2 instance and transformed it into a scalable, production-grade, event-driven platform and CRM
-    used across multiple countries, time zones, business models, and languages. Designed and
-    implemented the cloud architecture, payments and settlement flows, data-privacy boundaries per
-    market, and integrations with a C++/Qt application running on field devices. Worked closely with
-    the Chinese OEM factory's technical lead on firmware and hardware roadmap, delivered OTA updates
-    over constrained legacy hardware, implemented multi-language and right-to-left localisation
-    on-device, and introduced idempotent communication patterns between devices and APIs.
-  </p>
-  <p class="stack">
-    <em>Stack:</em> TypeScript, React, Django, Celery, PostgreSQL, Terraform,
-    AWS (VPC, ECS, RDS, CloudWatch, Secrets Manager, S3, IAM), Auth0, Airwallex.
-  </p>
-</article>
+<ol class="timeline">
 
-<article>
-  <h3>Full Stack Developer &middot; ANSIC Group / Project Racelab</h3>
-  <p class="meta">Oct 2021 &ndash; Jun 2023 &middot; Melbourne</p>
-  <p>
-    Modernised Racelab's legacy EC2 infrastructure into a scalable, event-driven architecture on AWS.
-    Replaced a Kafka-based design with a high-throughput Go API on Lambda handling hundreds of
-    requests per second, orchestrated workflows via Step Functions, and moved from hand-managed
-    EC2/QlikOps deployments to reproducible microservice environments via CloudFormation. In a second
-    project, built a Next.js application on ECS for insurers to assess applicant risk by aggregating
-    public data and integrating with Australian government identity services &mdash; secure endpoints
-    behind Cognito, driver's licence verification, and government APIs producing ID scores and
-    criminal-history checks.
-  </p>
-  <p class="stack">
-    <em>Stack:</em> AWS VPC, Lambda, Step Functions, Go, RDS, DynamoDB, CloudFormation, Amplify, Next.js.
-  </p>
-</article>
+  <li>
+    <p class="when">Jun 2023 &ndash; Present</p>
+    <h3>Head of IT &middot; Eyerising International</h3>
+    <p>Joined as employee #4 and first developer. Turned a single-instance MERN prototype into a production-grade, event-driven CRM and platform running across multiple countries &mdash; payments, settlement, per-market data privacy, and OTA updates to C++/Qt field devices built by a Chinese OEM partner.</p>
+  </li>
 
-<article>
-  <h3>Software Consultant &middot; ANZ (Independent)</h3>
-  <p class="meta">May 2021 &ndash; Oct 2021 &middot; Remote</p>
-  <p>
-    Consulting engagement with ANZ during 2021. Joined a distributed team of 6&ndash;7 engineers
-    working on backend services for transaction risk categorisation for retail customers.
-    Contributed backend expertise to enhance internal risk pipelines and classification services
-    within a large, highly regulated banking environment, collaborating fully remotely and
-    navigating enterprise processes, codebases, and stakeholders.
-  </p>
-  <p class="stack"><em>Stack:</em> Python, React.</p>
-</article>
+  <li>
+    <p class="when">Oct 2021 &ndash; Jun 2023</p>
+    <h3>Full Stack Developer &middot; ANSIC Group / Racelab</h3>
+    <p>Modernised Racelab's legacy AWS stack: replaced a Kafka design with a Go-on-Lambda API handling hundreds of requests per second, orchestrated via Step Functions. In parallel, built a Next.js ID-verification app integrating Australian government APIs so insurers could score applicant risk.</p>
+  </li>
 
-<article>
-  <h3>Full Stack Developer &middot; Transpire</h3>
-  <p class="meta">Feb 2018 &ndash; May 2021 &middot; Melbourne</p>
-  <p>
-    Senior software engineer in a consultancy, supporting multiple client projects.
-    For <strong>AGL</strong>, built a Python/Django REST API enabling customers with solar panels
-    to sell excess energy back to the grid &mdash; the foundation for new energy products.
-    Later joined <strong>Vodafone's DreamLab</strong>, contributing to an event-driven AWS
-    architecture that used mobile devices as a distributed compute network for Imperial College
-    London research &mdash; APIs and data flows allowing Android and iOS apps to download
-    computation tasks, process them on-device, and return results to the backend.
-  </p>
-  <p class="stack">
-    <em>Stack:</em> Python/Django, React, AWS EC2/SQS/Lambda/DynamoDB/API Gateway/S3/CloudWatch/ECS/CloudFormation.
-  </p>
-</article>
+  <li>
+    <p class="when">May 2021 &ndash; Oct 2021</p>
+    <h3>Software Consultant &middot; ANZ</h3>
+    <p>Backend consultant on ANZ's transaction risk categorisation pipelines. Distributed team of 6&ndash;7 engineers, fully remote, inside a large regulated banking environment.</p>
+  </li>
 
-<article>
-  <h3>Mentor &middot; RMIT University</h3>
-  <p class="meta">Nov 2018 &ndash; Dec 2019 &middot; Remote</p>
-  <p>
-    Remote mentor for RMIT students in introductory programming courses. 1:1 and small-group support
-    via online channels, helping students understand core software development concepts, debug
-    assignments, and build confidence writing code.
-  </p>
-</article>
+  <li>
+    <p class="when">Feb 2018 &ndash; May 2021</p>
+    <h3>Full Stack Developer &middot; Transpire</h3>
+    <p>Senior engineer in a consultancy supporting multiple clients. Built a Django REST API letting AGL customers sell excess solar energy back to the grid. Contributed to Vodafone's DreamLab &mdash; an event-driven AWS system using mobile phones as a distributed compute cluster for Imperial College London research.</p>
+  </li>
 
-<article>
-  <h3>Frontend Developer &middot; TyreConnect</h3>
-  <p class="meta">Sep 2017 &ndash; Feb 2018 &middot; Remote</p>
-  <p>
-    Main frontend developer for TyreConnect's online tyre shop. Drove the migration from an older
-    Ruby-based implementation to a Node.js API and React frontend, leading the React implementation
-    of the new UI.
-  </p>
-  <p class="stack"><em>Stack:</em> React, Node.js.</p>
-</article>
+  <li>
+    <p class="when">Nov 2018 &ndash; Dec 2019</p>
+    <h3>Mentor &middot; RMIT University</h3>
+    <p>Remote mentor for RMIT students in introductory programming courses. 1:1 and small-group support.</p>
+  </li>
 
-<article>
-  <h3>Operations Manager &middot; UV LATAM</h3>
-  <p class="meta">Feb 2015 &ndash; Jan 2017 &middot; Buenos Aires</p>
-  <p>
-    Before transitioning fully into software engineering, led operations at UV LATAM &mdash; a
-    multi-country advertising agency with offices in Buenos Aires, Santiago, and Panama, and ~40
-    staff. Oversaw production planning, invoicing and cash flow, delivery deadlines, and key client
-    relationships, running the operational backbone of the agency across locations.
-  </p>
-</article>
+  <li>
+    <p class="when">Sep 2017 &ndash; Feb 2018</p>
+    <h3>Frontend Developer &middot; TyreConnect</h3>
+    <p>Led the React rewrite of TyreConnect's online tyre shop, migrating the customer-facing experience off a legacy Ruby stack onto a Node.js + React architecture.</p>
+  </li>
 
-<article>
-  <h3>Chief Product Manager &middot; Monits</h3>
-  <p class="meta">Jan 2014 &ndash; Feb 2015 &middot; Buenos Aires</p>
-  <p>
-    Led a team of six (designers and frontend developers) and worked closely with a broader group of
-    ~10 developers. Owned product and UX delivery for key clients including Latin American travel
-    agencies and MercadoLibre. Tightened feedback loops between UX, design, and engineering to ship
-    usable, high-quality product increments.
-  </p>
-</article>
+  <li>
+    <p class="when">Feb 2015 &ndash; Jan 2017</p>
+    <h3>Operations Manager &middot; UV LATAM</h3>
+    <p>Ran day-to-day operations for a ~40-person multi-country advertising agency with offices in Buenos Aires, Santiago, and Panama &mdash; production planning, invoicing, delivery, and key client relationships across locations.</p>
+  </li>
 
-<article>
-  <h3>Founder &amp; CEO &middot; Bukium</h3>
-  <p class="meta">Aug 2009 &ndash; Jan 2014 &middot; Buenos Aires / San Francisco</p>
-  <p>
-    Founded Bukium, a "YouTube for books" startup connecting authors and readers directly. Without
-    prior software development experience, recruited and led a development team in Argentina to
-    build and iterate on the platform. Scaled over ~5 years, sold a 10% stake to Telefónica, and
-    spent a year in San Francisco pitching to VCs. End-to-end entrepreneurial experience from
-    concept and build to corporate partnership and international fundraising.
-  </p>
-</article>
+  <li>
+    <p class="when">Jan 2014 &ndash; Feb 2015</p>
+    <h3>Chief Product Manager &middot; Monits</h3>
+    <p>Led a team of six across UX and frontend, shipping product for clients including MercadoLibre and Latin American travel agencies. Tightened feedback loops between design and engineering.</p>
+  </li>
 
-</section>
+  <li>
+    <p class="when">Aug 2009 &ndash; Jan 2014</p>
+    <h3>Founder &amp; CEO &middot; Bukium</h3>
+    <p>Founded a "YouTube for books" startup. Recruited and led the development team in Argentina, scaled over ~5 years, sold a 10% stake to Telefónica, and spent a year in San Francisco pitching VCs.</p>
+  </li>
 
-<section>
-<h2>Education &amp; certifications</h2>
-<ul>
-  <li><strong>AWS Certified Developer &ndash; Associate</strong> (2018) &mdash; credential AWS00658633.</li>
-  <li><strong>Business Development Seminars</strong>, IAE Business School Naves Program (2011) &mdash; Bukium selected among the top 10 of 250 projects.</li>
-  <li><strong>Master's in Graphic Design &amp; Visual Communication</strong>, Kennedy University, Argentina (2000&ndash;2004).</li>
-</ul>
-</section>
-
-<section>
-<h2>Languages</h2>
-<p>English (fluent) &middot; Spanish (native).</p>
+</ol>
 </section>
 
 <footer>
