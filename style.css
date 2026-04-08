@@ -1,0 +1,128 @@
+/* Federico Roma — pure CSS, no framework. Karpathy-minimal, single column, content-first. */
+
+:root {
+  --fg: #1a1a1a;
+  --muted: #6a6a6a;
+  --bg: #ffffff;
+  --link: #0b5fff;
+  --rule: #e5e5e5;
+  --max: 680px;
+}
+
+* { box-sizing: border-box; }
+
+html { -webkit-text-size-adjust: 100%; }
+
+body {
+  margin: 0;
+  padding: 0;
+  background: var(--bg);
+  color: var(--fg);
+  font: 16px/1.6 -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+}
+
+main {
+  max-width: var(--max);
+  margin: 0 auto;
+  padding: 3rem 1.25rem 4rem;
+}
+
+a {
+  color: var(--link);
+  text-decoration: none;
+}
+a:hover { text-decoration: underline; }
+
+header {
+  margin-bottom: 2.5rem;
+}
+
+h1 {
+  font-size: 1.9rem;
+  margin: 0 0 .25rem;
+  font-weight: 600;
+  letter-spacing: -.01em;
+}
+
+.tagline {
+  margin: 0 0 .5rem;
+  color: var(--muted);
+  font-size: 1rem;
+}
+
+.contact {
+  margin: 0;
+  font-size: .95rem;
+  color: var(--muted);
+}
+
+section {
+  margin-top: 2.5rem;
+}
+
+section > p {
+  margin: 0 0 1rem;
+}
+
+h2 {
+  font-size: 1.15rem;
+  font-weight: 600;
+  margin: 0 0 1rem;
+  padding-bottom: .35rem;
+  border-bottom: 1px solid var(--rule);
+}
+
+h3 {
+  font-size: 1.02rem;
+  font-weight: 600;
+  margin: 0 0 .15rem;
+}
+
+article {
+  margin: 0 0 1.75rem;
+}
+
+.meta {
+  margin: 0 0 .5rem;
+  color: var(--muted);
+  font-size: .9rem;
+}
+
+.stack {
+  margin: .5rem 0 0;
+  color: var(--muted);
+  font-size: .88rem;
+}
+.stack em {
+  font-style: normal;
+  color: var(--fg);
+}
+
+ul {
+  margin: 0 0 1rem;
+  padding-left: 1.25rem;
+}
+li { margin-bottom: .5rem; }
+
+footer {
+  margin-top: 3.5rem;
+  padding-top: 1rem;
+  border-top: 1px solid var(--rule);
+  color: var(--muted);
+  font-size: .85rem;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --fg: #ececec;
+    --muted: #9a9a9a;
+    --bg: #111111;
+    --link: #6ea8ff;
+    --rule: #2a2a2a;
+  }
+}
+
+@media (max-width: 480px) {
+  main { padding: 2rem 1rem 3rem; }
+  h1 { font-size: 1.6rem; }
+}
