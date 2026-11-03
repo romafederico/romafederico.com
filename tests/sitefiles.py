@@ -7,6 +7,7 @@ Site files are the *.html and *.css at the repo root and the files they referenc
 import os
 import re
 from html.parser import HTMLParser
+from urllib.parse import unquote
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
@@ -92,7 +93,7 @@ def resolve(rel, url):
     if not url or EXTERNAL.match(url):
         return None
     path, _, fragment = url.partition("#")
-    path = path.split("?", 1)[0]
+    path = unquote(path.split("?", 1)[0])
     if not path:
         return rel, fragment
     base = "" if path.startswith("/") else os.path.dirname(rel)

@@ -12,7 +12,7 @@ import socket
 import subprocess
 import sys
 import time
-from urllib.parse import urlparse
+from urllib.parse import unquote, urlparse
 
 from playwright.sync_api import sync_playwright
 
@@ -22,6 +22,12 @@ WIDTHS = (390, 1440)
 
 def ignored(url):
     return urlparse(url).path == "/favicon.ico"
+
+
+def site_file(url):
+    """The repo file a request URL points to, for the annotation; index.html when there is none."""
+    path = unquote(urlparse(url).path).lstrip("/") if url else ""
+    return path if path and not path.endswith("/") else "index.html"
 
 
 def free_port():
@@ -44,29 +50,30 @@ def check(browser, base, width, shots):
     errors = []
     page = browser.new_page(viewport={"width": width, "height": 900})
     page.on("console", lambda m: m.type == "error" and not ignored(m.location.get("url", ""))
-            and errors.append(f"console error: {m.text} ({m.location.get('url')})"))
-    page.on("pageerror", lambda e: errors.append(f"page error: {e}"))
+            and errors.append((site_file(m.location.get("url")),
+                               f"console error: {m.text} ({m.location.get('url')})")))
+    page.on("pageerror", lambda e: errors.append(("index.html", f"page error: {e}")))
     page.on("requestfailed", lambda r: not ignored(r.url)
-            and errors.append(f"request failed: {r.url} ({r.failure})"))
+            and errors.append((site_file(r.url), f"request failed: {r.url} ({r.failure})")))
     page.on("response", lambda r: r.status >= 400 and not ignored(r.url)
-            and errors.append(f"HTTP {r.status}: {r.url}"))
+            and errors.append((site_file(r.url), f"HTTP {r.status}: {r.url}")))
 
     response = page.goto(base + "/", wait_until="load")
     if response is None or not response.ok:
-        errors.append(f"/ returned {response.status if response else 'nothing'}")
+        errors.append(("index.html", f"/ returned {response.status if response else 'nothing'}"))
     if not page.title().strip():
-        errors.append("missing or empty <title>")
+        errors.append(("index.html", "missing or empty <title>"))
     avatars = page.locator("img[src$='avatar.jpg']")
     if avatars.count() == 0:
-        errors.append("no <img> for avatar.jpg")
+        errors.append(("index.html", "no <img> for avatar.jpg"))
     elif not avatars.first.evaluate("img => img.complete && img.naturalWidth > 0"):
-        errors.append("avatar.jpg did not load")
+        errors.append(("avatar.jpg", "avatar.jpg did not load"))
 
     path = os.path.join(shots, f"page-{width}.png")
     page.screenshot(path=path, full_page=True)
     print(f"{width}px: {'OK' if not errors else f'{len(errors)} error(s)'}, screenshot {path}")
     page.close()
-    return [f"{width}px: {e}" for e in errors]
+    return [(rel, f"{width}px: {e}") for rel, e in errors]
 
 
 def main():
@@ -88,10 +95,10 @@ def main():
     finally:
         server.terminate()
         server.wait()
-    for e in errors:
+    for rel, e in errors:
         print(e)
         if os.environ.get("GITHUB_ACTIONS") == "true":
-            print(f"::error file=index.html::{e}")
+            print(f"::error file={rel}::{e}")
     return 1 if errors else 0
 
 

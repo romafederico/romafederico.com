@@ -35,6 +35,10 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
+      # A pull failure fails here, on its own, instead of looking like an empty report.
+      - name: Pull vnu image
+        run: docker pull --quiet "$VNU_IMAGE"
+
       - name: vnu
         run: |
           shopt -s nullglob
@@ -48,7 +52,13 @@ jobs:
             out=$(docker run --rm -v "$PWD:/site:ro" -w /site --entrypoint sh "$VNU_IMAGE" \
               -c '/vnu-runtime-image/bin/vnu --errors-only --format json "$@" 2>&1 >/dev/null' vnu "$@" \
               | grep -v '^Picked up JAVA_TOOL_OPTIONS') || true
-            [ -n "$out" ] || return 0
+            # vnu always prints a report ({"messages":[]} when clean): no JSON means it didn't run. Fail closed.
+            if ! jq -e '.messages | type == "array"' >/dev/null 2>&1 <<<"$out"; then
+              printf '%s\n' "$out"
+              echo "::error::vnu produced no report for: $*"
+              rc=1
+              return
+            fi
             jq -r '.messages[] | "\(.url | sub("^file:/site/"; "")):\(.lastLine // .firstLine // 1): \(.type): \(.message)"' <<<"$out"
             jq -r '.messages[] | "::error file=\(.url | sub("^file:/site/"; "")),line=\(.lastLine // .firstLine // 1)::\(.message)"' <<<"$out"
             [ "$(jq '.messages | length' <<<"$out")" -eq 0 ] || rc=1
