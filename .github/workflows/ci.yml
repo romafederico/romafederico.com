@@ -1,0 +1,122 @@
+# Check every pull request and every push to main.
+# Check names ("CI / html", "CI / links", "CI / page-load", "CI / no-js", "CI / scripts") are relied on by the merge check: keep them stable.
+# No secrets: nothing here talks to staging or the live site.
+# The checks run in CI only and add nothing to the site: no package.json, no build step, tool versions pinned here.
+# Site files = the *.html and *.css at the repo root and the files they reference (tests/sitefiles.py) until #5's package file list.
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  VNU_IMAGE: ghcr.io/validator/validator:24.10.17@sha256:765b60a5ff3e2428ebe1af0b9b50051934c2a0e41bac3455cbdc6560bb634207
+  PYTHON_IMAGE: python:3.13.18-slim@sha256:ae14d4ce8771606477a81446e7ef429edd6762305fc50c84507c1041fa8285d1
+  # The Playwright pip package must match the image's browsers: change both together.
+  PLAYWRIGHT_IMAGE: mcr.microsoft.com/playwright/python:v1.64.1-noble@sha256:330d401ae23c905896a0c26c66c36fc971b621519e7b11b435a8328d7bf6e031
+  PLAYWRIGHT_VERSION: 1.64.1
+  SHELLCHECK_IMAGE: koalaman/shellcheck:v0.11.0@sha256:61862eba1fcf09a484ebcc6feea46f1782532571a34ed51fedf90dd25f925a8d
+  ACTIONLINT_IMAGE: rhysd/actionlint:1.7.12@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667
+
+jobs:
+  # W3C Nu HTML Checker: HTML errors, and CSS that doesn't parse.
+  html:
+    name: html
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: vnu
+        run: |
+          shopt -s nullglob
+          html=(*.html)
+          css=(*.css)
+          [ "${#html[@]}" -gt 0 ] || { echo "::error::no .html files found"; exit 1; }
+          rc=0
+          check() {
+            local out
+            out=$(docker run --rm -v "$PWD:/site:ro" -w /site "$VNU_IMAGE" \
+              /vnu-runtime-image/bin/vnu --errors-only --format json "$@" 2>&1 >/dev/null | grep -v '^Picked up JAVA_TOOL_OPTIONS') || true
+            [ -n "$out" ] || return 0
+            jq -r '.messages[] | "\(.url | sub("^file:/site/"; "")):\(.lastLine // .firstLine // 1): \(.type): \(.message)"' <<<"$out"
+            jq -r '.messages[] | "::error file=\(.url | sub("^file:/site/"; "")),line=\(.lastLine // .firstLine // 1)::\(.message)"' <<<"$out"
+            [ "$(jq '.messages | length' <<<"$out")" -eq 0 ] || rc=1
+          }
+          check "${html[@]}"
+          [ "${#css[@]}" -eq 0 ] || check --css "${css[@]}"
+          [ "$rc" -eq 0 ] && echo "OK: ${html[*]} ${css[*]}"
+          exit "$rc"
+
+  # Internal href/src/url() point to files in the repo, #fragments to ids. External links are not checked.
+  links:
+    name: links
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Internal links and image paths
+        run: docker run --rm -e GITHUB_ACTIONS -v "$PWD:/repo:ro" -w /repo "$PYTHON_IMAGE" python3 tests/check_links.py
+
+  # The page opens in headless Chromium with no console errors, page errors or failed requests.
+  page-load:
+    name: page-load
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Load / at 390 and 1440 wide
+        run: |
+          mkdir -p "$RUNNER_TEMP/screenshots"
+          docker run --rm --ipc=host -e GITHUB_ACTIONS -e PLAYWRIGHT_VERSION \
+            -v "$PWD:/repo:ro" -v "$RUNNER_TEMP/screenshots:/screenshots" -w /repo "$PLAYWRIGHT_IMAGE" \
+            bash -c 'pip install --quiet --disable-pip-version-check --root-user-action=ignore --break-system-packages "playwright==$PLAYWRIGHT_VERSION" && python3 tests/page_load.py /screenshots'
+
+      - name: Upload screenshots
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: screenshots-${{ github.sha }}
+          path: ${{ runner.temp }}/screenshots/
+          retention-days: 7
+          if-no-files-found: warn
+
+  # Federico wants the site to stay hand-written HTML + CSS with no JavaScript (epic #1).
+  # Fails on <script, on...= event attributes, javascript: URLs, or any *.js/*.mjs/*.cjs outside .github/.
+  no-js:
+    name: no-js
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: No JavaScript
+        run: docker run --rm -e GITHUB_ACTIONS -v "$PWD:/repo:ro" -w /repo "$PYTHON_IMAGE" python3 tests/no_js.py
+
+  scripts:
+    name: scripts
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      # deploy/ and tests/ get shell scripts in later tickets (#5, #7, #8); none yet is a pass.
+      - name: shellcheck
+        run: |
+          mapfile -t files < <(find deploy tests -name '*.sh' 2>/dev/null | sort)
+          if [ "${#files[@]}" -eq 0 ]; then echo "no shell scripts yet"; exit 0; fi
+          printf '%s\n' "${files[@]}"
+          docker run --rm -v "$PWD:/mnt" -w /mnt "$SHELLCHECK_IMAGE" -x "${files[@]}"
+
+      - name: actionlint
+        run: docker run --rm -v "$PWD:/repo" -w /repo "$ACTIONLINT_IMAGE" -color
