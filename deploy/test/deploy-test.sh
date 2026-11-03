@@ -710,8 +710,8 @@ check "rollback: put-package, backup rollback-v1-0-0, install, current" '[ "$(ca
 check "rollback: sends the release's own asset byte for byte" 'cmp -s $T/put-package.stdin $T/pkg/$LPKG'
 check "rollback: smoke test expects $RELEASE on /version.json and www" \
   'grep -qE "^$LIVE_URL/version.json\?" $T/curl.log && grep -qx "https://www.romafederico.com/" $T/curl.log && grep -q "^ok" $T/out.log'
-check "rollback: outputs mode=rollback, dry_run=false, release_id, backup live-<stamp>-rollback-v1-0-0" \
-  '[ "$(out mode)" = rollback ] && [ "$(out dry_run)" = false ] && [ "$(out release_id)" = 7 ] && [ "$(out backup)" = live-20261103-120000-rollback-v1-0-0 ]'
+check "rollback: outputs dry_run=false, release_id, backup live-<stamp>-rollback-v1-0-0" \
+  '[ "$(out dry_run)" = false ] && [ "$(out release_id)" = 7 ] && [ "$(out backup)" = live-20261103-120000-rollback-v1-0-0 ]'
 check "rollback: summary names it, who started it, the package and the backup" \
   'grep -q "### Rollback live to $RELEASE" $T/summary.md && grep -q "Started by: \`romafederico\`" $T/summary.md && grep -q "$LSUM" $T/summary.md && grep -qxF -- "- Backup before rollback: \`live-20261103-120000-rollback-v1-0-0\` (.tgz in ~/rf-backups)" $T/summary.md'
 check "rollback: the recorded live deploy's sha256 is checked" 'grep -qx "==> ok: rollback to $RELEASE uses the package its Live deploy recorded" $T/out.log'
@@ -731,7 +731,7 @@ expected="put-package $LSUM
 backup rollback-v1-0-0
 current"
 check "rollback --dry-run: put-package, backup, current; no install" '[ "$(rc)" = 0 ] && [ "$(cat $T/gate.log)" = "$expected" ] || { cat $T/gate.log; cat $T/out.log; false; }'
-check "rollback --dry-run: dry_run=true, mode=rollback, no smoke test" '[ "$(out dry_run)" = true ] && [ "$(out mode)" = rollback ] && [ ! -e $T/curl.log ]'
+check "rollback --dry-run: dry_run=true, no smoke test" '[ "$(out dry_run)" = true ] && [ ! -e $T/curl.log ]'
 check "rollback --dry-run: summary says dry run" 'grep -q "### Rollback live to $RELEASE (dry run)" $T/summary.md && grep -q "Dry run" $T/summary.md'
 rm -rf "$T"
 
@@ -944,6 +944,9 @@ check "rollback-live.yml: dry_run input gives --dry-run" "grep -qF \"inputs.dry_
 check "rollback-live.yml: notes job permissions contents write only, after every run on a tag" \
   "[ \"\$(rollback_yml | jq -c .jobs.notes.permissions)\" = '{\"contents\":\"write\"}' ] && [ \"\$(rollback_yml | jq -r .jobs.notes.if)\" = \"always() && startsWith(github.ref, 'refs/tags/v')\" ]"
 
+check "rollback-live.yml: notes take dry_run from the input (deploy.sh's output is empty when refused early)" \
+  "[ \"\$(rollback_yml | jq -r .jobs.notes.env.DRY_RUN)\" = '\${{ inputs.dry_run }}' ] && ! grep -q 'outputs.dry_run' '$KWF'"
+
 # The rollback notes step, run as the workflow would, with a fake gh that holds one release.
 # Its own copies of notes_step's variables, in a subshell too.
 # shellcheck disable=SC2031
@@ -982,8 +985,12 @@ rollback_notes_step success true live-20261103-130000-rollback-v1-0-0 "$BODY"
 check "rollback notes: a second run adds a line, not a second heading; dry run marked" \
   '[ "$(grep -cx "## Live rollbacks" $T/new-body)" = 1 ] && [ "$(grep -c "rollback.* started by" $T/new-body)" = 2 ] && grep -q "rollback (dry run) started by" $T/new-body'
 rm -rf "$T" "$BODY"
-rollback_notes_step failure "" ""
-check "rollback notes: a refused run is listed, no backup" \
+rollback_notes_step failure true ""
+check "rollback notes: a refused dry run is listed as a dry run, no backup" \
+  'grep -q "rollback (dry run) started by \`romafederico\`: \*\*failure\*\*, https://" $T/new-body'
+rm -rf "$T"
+rollback_notes_step failure false ""
+check "rollback notes: a refused real run is listed, no backup" \
   'grep -q "rollback started by \`romafederico\`: \*\*failure\*\*, https://" $T/new-body'
 rm -rf "$T"
 

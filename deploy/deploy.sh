@@ -49,7 +49,7 @@
 #
 # Writes to GITHUB_OUTPUT: package_sha256=<64 hex> as soon as the package is checked (staging: for
 # the staging/deploy status). Live also: commit, package, release_id and dry_run once the release is
-# known, mode=release|rollback, backup=<gate's BACKUP= name> as soon as the backup exists, and failed_step=<step> on failure
+# known, backup=<gate's BACKUP= name> as soon as the backup exists, and failed_step=<step> on failure
 # (guards, settings, put-package, backup, install, current, smoke-test), for the release notes.
 # The SSH key is the only secret on disk: a mode-600 temp file, removed on exit (also on failure).
 # Backticks in single quotes are Markdown for the run summary.
@@ -89,7 +89,6 @@ case " $ENVIRONMENTS " in
   *) die "--env must be one of: $ENVIRONMENTS (got '$ENV_NAME')";;
 esac
 ROLLBACK=false
-MODE=release
 if [ "$ENV_NAME" = live ]; then
   # Only the logins listed may start a live deploy or rollback. The list is the one in the checked-out tag:
   # changing it needs a reviewed PR and a release.
@@ -108,7 +107,6 @@ if [ "$ENV_NAME" = live ]; then
       || die "--rollback must be vX.Y.Z, a published release (got '$ROLLBACK_TO')"
     RELEASE="$ROLLBACK_TO"
     ROLLBACK=true
-    MODE=rollback
   fi
   [[ "$RELEASE" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-rc\.[1-9][0-9]*)?$ ]] \
     || die "--release must be vX.Y.Z or vX.Y.Z-rc.N (got '$RELEASE')"
@@ -292,7 +290,6 @@ deploy_live() {
     else log "ok: rollback to $RELEASE uses its Staging proof package (no Live deploy recorded)"; fi
   fi
   output package_sha256 "$PACKAGE_SHA256"
-  output mode "$MODE"
   summary "### $TITLE$([ "$DRY_RUN" = true ] && echo ' (dry run)')" "" \
     "- Started by: \`$ACTOR\`" "- Commit: \`$commit\`" "- Package: \`$PKG_NAME\`, sha256 \`$PACKAGE_SHA256\`" ""
 

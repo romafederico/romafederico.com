@@ -38,7 +38,6 @@ jobs:
       id-token: write
       statuses: read
     outputs:
-      dry_run: ${{ steps.deploy.outputs.dry_run }}
       package_sha256: ${{ steps.deploy.outputs.package_sha256 }}
       backup: ${{ steps.deploy.outputs.backup }}
       failed_step: ${{ steps.deploy.outputs.failed_step }}
@@ -102,7 +101,9 @@ jobs:
       RELEASE: ${{ github.ref_name }}
       ACTOR: ${{ github.triggering_actor }}
       RESULT: ${{ needs.deploy.result }}
-      DRY_RUN: ${{ needs.deploy.outputs.dry_run }}
+      # From the input, not deploy.sh's output: that is empty when the guards refuse early, and a
+      # rollback never turns dry run on or off itself (it refuses pre-releases instead).
+      DRY_RUN: ${{ inputs.dry_run }}
       BACKUP: ${{ needs.deploy.outputs.backup }}
       RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}/attempts/${{ github.run_attempt }}
     steps:
