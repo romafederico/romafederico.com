@@ -44,8 +44,10 @@ jobs:
           rc=0
           check() {
             local out
-            out=$(docker run --rm -v "$PWD:/site:ro" -w /site "$VNU_IMAGE" \
-              /vnu-runtime-image/bin/vnu --errors-only --format json "$@" 2>&1 >/dev/null | grep -v '^Picked up JAVA_TOOL_OPTIONS') || true
+            # vnu writes its JSON report to stderr; keep docker's own pull messages out of it.
+            out=$(docker run --rm -v "$PWD:/site:ro" -w /site --entrypoint sh "$VNU_IMAGE" \
+              -c '/vnu-runtime-image/bin/vnu --errors-only --format json "$@" 2>&1 >/dev/null' vnu "$@" \
+              | grep -v '^Picked up JAVA_TOOL_OPTIONS') || true
             [ -n "$out" ] || return 0
             jq -r '.messages[] | "\(.url | sub("^file:/site/"; "")):\(.lastLine // .firstLine // 1): \(.type): \(.message)"' <<<"$out"
             jq -r '.messages[] | "::error file=\(.url | sub("^file:/site/"; "")),line=\(.lastLine // .firstLine // 1)::\(.message)"' <<<"$out"
