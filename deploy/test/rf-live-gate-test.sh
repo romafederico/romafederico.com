@@ -1,13 +1,14 @@
 #!/usr/bin/env bash
 # shellcheck disable=SC2034  # the before* snapshots are read inside check's eval strings
 # Tests for deploy/dreamhost/rf-live-gate.sh (#8) in a fake DreamHost home
-# folder: the romafederico.com site (with an old README.md and a KEEP name),
+# folder: the romafederico.com site (with an old README.md, other live-only
+# names and DreamHost's own KEEP names),
 # the two other live sites, ~/dk-backups, ~/bin and ~/.ssh. Never touches a
 # server. Run: deploy/test/rf-live-gate-test.sh
 #
-# The installed copy differs from the script in two lines only: KEEP holds
-# .well-known, and PATH starts with a stub folder whose `mv` can fail the
-# rename of the new folder onto the site (RF_STUB_MV, see below).
+# The installed copy differs from the script in one line only: PATH starts
+# with a stub folder whose `mv` can fail the rename of the new folder onto
+# the site (RF_STUB_MV, see below).
 set -uo pipefail
 
 ROOT=$(cd "$(dirname "$0")/../.." && pwd)
@@ -54,11 +55,11 @@ echo '<?php // other site' > "$H/marielgaribaldi.com/index.php"
 echo '2026-11-01T00:00:00Z OK current' > "$H/dk-backups/gate.log"
 echo 'sql' | gzip > "$H/dk-backups/live-20261101-120000-before-v1-0-0.sql.gz"
 head -c 100 /dev/urandom > "$H/dk-backups/packages/$(printf '%064d' 9).tar.gz"
-sed -e 's|^KEEP=()$|KEEP=(.well-known)|' -e "s|^export PATH=/usr/bin:/bin$|export PATH=$T/stub:/usr/bin:/bin|" \
+sed -e "s|^export PATH=/usr/bin:/bin$|export PATH=$T/stub:/usr/bin:/bin|" \
   "$GATE_SRC" > "$H/bin/rf-live-gate"
 chmod 755 "$H/bin/rf-live-gate"
-check "(test copy differs from the script in KEEP and PATH only)" \
-  "[ \"\$(diff '$GATE_SRC' '$H/bin/rf-live-gate' | grep -c '^>')\" = 2 ]"
+check "(test copy differs from the script in PATH only)" \
+  "[ \"\$(diff '$GATE_SRC' '$H/bin/rf-live-gate' | grep -c '^>')\" = 1 ]"
 
 # Every path, type, mode and file checksum under <dir>, except the gate's own log and lock.
 snapshot() {
@@ -78,6 +79,12 @@ setup() {
   echo '# old README from the rsync deploy' > "$S/README.md"
   echo 'old' > "$S/old-dir/a.txt"
   echo 'token' > "$S/.well-known/acme-challenge/abc"
+  # DreamHost's own names (KEEP): the panel's diagnostics symlink (root-owned
+  # on the server, its target not readable by the user, so dangling here) and
+  # the empty favicon placeholders.
+  ln -s "$DH_DIAG" "$S/.dh-diag"
+  : > "$S/favicon.ico"
+  : > "$S/favicon.gif"
   mkdir -p "$B/packages"
   chmod 700 "$B" "$B/packages"
 }
@@ -87,6 +94,7 @@ gate() {
   (cd "$H" && SSH_ORIGINAL_COMMAND="$1" HOME="$H" "$H/bin/rf-live-gate" < "${2:-/dev/null}" > "$T/out" 2> "$T/err")
 }
 
+DH_DIAG=/dh/web/phpdiag
 COMMIT=0123456789abcdef0123456789abcdef01234567
 # make_pkg <name> [extra tar args...]: a package laid out like deploy/build-package.sh's.
 # $P/<name>.tar.gz and $SUM; the source tree is $P/<name>/.
@@ -257,10 +265,13 @@ check "exit 0" "[ $code = 0 ]"
 check "logged as OK" "last_log | grep -q ' OK install $SUM v1.2.3$'"
 check "prints INSTALLED=<version> <sha256>" "grep -qx 'INSTALLED=v1.2.3 $SUM' '$T/out'"
 check "the site holds exactly the package's site/, version.json and the KEEP names" \
-  "[ \"\$(cd '$S' && find . -mindepth 1 | LC_ALL=C sort)\" = \"\$( (cd '$P/good/site' && find . -mindepth 1; echo ./version.json; echo ./.well-known; echo ./.well-known/acme-challenge; echo ./.well-known/acme-challenge/abc) | LC_ALL=C sort)\" ]"
-check "files are the package's" "diff -r -x version.json -x .well-known '$P/good/site' '$S'"
-check "the KEEP name is the live one, unchanged" "[ \"\$(cat '$S/.well-known/acme-challenge/abc')\" = token ]"
-check "old README.md and old-dir are gone from the site" "[ ! -e '$S/README.md' ] && [ ! -e '$S/old-dir' ]"
+  "[ \"\$(cd '$S' && find . -mindepth 1 | LC_ALL=C sort)\" = \"\$( (cd '$P/good/site' && find . -mindepth 1; printf './%s\n' version.json .dh-diag favicon.ico favicon.gif) | LC_ALL=C sort)\" ]"
+check "files are the package's" "diff -r -x version.json -x .dh-diag -x 'favicon.*' '$P/good/site' '$S'"
+check "KEEP: .dh-diag is still a symlink to the same target" "[ -L '$S/.dh-diag' ] && [ \"\$(readlink '$S/.dh-diag')\" = '$DH_DIAG' ]"
+check "KEEP: favicon.ico and favicon.gif are the live ones (empty files), unchanged" \
+  "[ \"\$(snapshot '$S' | grep -E ' \./favicon\.(ico|gif)$')\" = \"\$(printf '%s\n' \"\$before_site\" | grep -E ' \./favicon\.(ico|gif)$')\" ] && [ ! -L '$S/favicon.ico' ] && [ ! -s '$S/favicon.ico' ] && [ ! -s '$S/favicon.gif' ]"
+check "old README.md, old-dir and .well-known (live-only, not KEEP) are gone from the site" \
+  "[ ! -e '$S/README.md' ] && [ ! -e '$S/old-dir' ] && [ ! -e '$S/.well-known' ]"
 prev=$(sed -n 's/^PREVIOUS=//p' "$T/out")
 check "prints PREVIOUS=site-<UTC stamp>" "[[ '$prev' =~ ^site-[0-9]{8}-[0-9]{6}$ ]]"
 check "the previous folder is kept whole in rf-backups/site-<stamp>" \
@@ -269,7 +280,7 @@ check "version.json: exactly the #5 format, environment live" \
   "jq -e --arg s '$SUM' --arg c '$COMMIT' 'keys_unsorted == [\"site\",\"environment\",\"version\",\"commit\",\"package_sha256\",\"installed_at\"] and .site == \"romafederico.com\" and .environment == \"live\" and .version == \"v1.2.3\" and .commit == \$c and .package_sha256 == \$s and (.installed_at | test(\"^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$\"))' '$S/version.json' >/dev/null"
 check "version.json is one line" "[ \$(wc -l < '$S/version.json') = 1 ]"
 check "files 644, folders 755 (package modes ignored)" \
-  "[ \"\$(find '$S' -path '$S/.well-known' -prune -o -type f -printf '%m\n' | sort -u)\" = 644 ] && [ \"\$(find '$S' -path '$S/.well-known' -prune -o -type d -printf '%m\n' | sort -u)\" = 755 ]"
+  "[ \"\$(find '$S' -type f -printf '%m\n' | sort -u)\" = 644 ] && [ \"\$(find '$S' -type d -printf '%m\n' | sort -u)\" = 755 ]"
 check "no .rf-new-* folder left" "[ -z \"\$(find '$H' -maxdepth 1 -name '.rf-new-*')\" ]"
 check "nothing outside the site and rf-backups changed" "[ \"\$(outside)\" = \"\$before_outside\" ]"
 gate current
@@ -281,8 +292,9 @@ make_pkg second
 gate "put-package $SUM" "$P/second.tar.gz"
 gate "install $SUM v1.2.4"; code=$?
 check "exit 0" "[ $code = 0 ]"
-check "site is the second package's" "diff -r -x version.json -x .well-known '$P/second/site' '$S'"
+check "site is the second package's" "diff -r -x version.json -x .dh-diag -x 'favicon.*' '$P/second/site' '$S'"
 check "version v1.2.4" "jq -e '.version == \"v1.2.4\"' '$S/version.json' >/dev/null"
+check "KEEP names survive a second install too" "[ \"\$(readlink '$S/.dh-diag')\" = '$DH_DIAG' ] && [ -f '$S/favicon.ico' ] && [ -f '$S/favicon.gif' ]"
 check "two site-<stamp> folders, the newer holds v1.2.3" \
   "[ \$(find '$B' -maxdepth 1 -name 'site-*' | wc -l) = 2 ] && jq -e '.version == \"v1.2.3\"' \"\$(find '$B' -maxdepth 1 -name 'site-*' | sort | tail -n1)/version.json\" >/dev/null"
 
@@ -303,7 +315,7 @@ gate "put-package $built" "$T/built/romafederico-site-$(git -C "$R" rev-parse HE
 check "put-package accepts it" "[ $code = 0 ]"
 gate "install $built v1.0.0"; code=$?
 check "install accepts it" "[ $code = 0 ]"
-check "site is the commit's site files" "[ \"\$(cd '$S' && ls -A | LC_ALL=C sort | tr '\n' ' ')\" = '.well-known avatar.jpg index.html style.css version.json ' ]"
+check "site is the commit's site files" "[ \"\$(cd '$S' && ls -A | LC_ALL=C sort | tr '\n' ' ')\" = '.dh-diag avatar.jpg favicon.gif favicon.ico index.html style.css version.json ' ]"
 check "version.json has the commit from BUILD.json" "jq -e --arg c \"\$(git -C '$R' rev-parse HEAD)\" '.commit == \$c' '$S/version.json' >/dev/null"
 
 echo "# install: refused or failed before the swap changes nothing"
@@ -329,13 +341,15 @@ gate "install $SUM v1.0.0"; code=$?
 check "<script in index.html: exit 1" "[ $code = 1 ]"
 check "<script in index.html: says so" "grep -q 'script' '$T/err'"
 check "<script in index.html: nothing changed, no .rf-new-* left" "[ \"\$(snapshot '$H')\" = \"\$before\" ]"
-make_pkg keep
-mkdir -p "$P/keep/site/.well-known"; echo evil > "$P/keep/site/.well-known/x"
-repack keep BUILD.json site
-gate "put-package $SUM" "$P/keep.tar.gz"
-before=$(snapshot "$H")
-gate "install $SUM v1.0.0"; code=$?
-check "package holds a KEEP name: exit 1, nothing changed" "[ $code = 1 ] && [ \"\$(snapshot '$H')\" = \"\$before\" ]"
+for k in favicon.ico .dh-diag; do
+  make_pkg keep
+  echo evil > "$P/keep/site/$k"
+  repack keep BUILD.json site
+  gate "put-package $SUM" "$P/keep.tar.gz"
+  before=$(snapshot "$H")
+  gate "install $SUM v1.0.0"; code=$?
+  check "package holds the KEEP name $k: exit 1, nothing changed" "[ $code = 1 ] && [ \"\$(snapshot '$H')\" = \"\$before\" ]"
+done
 make_pkg good
 gate "put-package $SUM" "$P/good.tar.gz"
 mv "$S" "$T/real-site"; ln -s "$T/real-site" "$S"
@@ -466,7 +480,7 @@ check "gate.log: only readable by the user, no temp file left" "[ \"\$(stat -c %
 
 echo "# fixed settings, no shell evaluation"
 check "settings are fixed at the top, not read from input" \
-  "grep -qx 'SITE_DIR=\"\$HOME/romafederico.com\"' '$GATE_SRC' && grep -qx 'BACKUP_DIR=\"\$HOME/rf-backups\"' '$GATE_SRC' && grep -qx 'KEEP=()' '$GATE_SRC' && grep -qx 'export PATH=/usr/bin:/bin' '$GATE_SRC' && grep -qx 'umask 077' '$GATE_SRC'"
+  "grep -qx 'SITE_DIR=\"\$HOME/romafederico.com\"' '$GATE_SRC' && grep -qx 'BACKUP_DIR=\"\$HOME/rf-backups\"' '$GATE_SRC' && grep -qx 'KEEP=(.dh-diag favicon.ico favicon.gif)' '$GATE_SRC' && grep -qx 'export PATH=/usr/bin:/bin' '$GATE_SRC' && grep -qx 'umask 077' '$GATE_SRC'"
 check "no eval, no sh -c" "! grep -nE '(^|[^a-z_])eval |(ba)?sh -c' '$GATE_SRC'"
 check "names no other site or backup folder" "! grep -nE 'diegokravetz|marielgaribaldi|dk-backups|\\.ssh|HOME/bin' '$GATE_SRC' | grep -v '^[0-9]*:#'"
 
