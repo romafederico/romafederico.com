@@ -132,6 +132,10 @@ jobs:
       - name: actionlint
         run: docker run --rm -v "$PWD:/repo" -w /repo "$ACTIONLINT_IMAGE" -color
 
+      # deploy/deploy.sh and deploy/smoke-test.sh (#7) with fake gh, aws, ssh, docker and curl: nothing leaves the runner.
+      - name: Deploy tests
+        run: deploy/test/deploy-test.sh
+
   # The script the DreamHost live deploy key is forced to (#8), in a fake home folder
   # with the other two live sites next to it. Never touches a server.
   gate-tests:
