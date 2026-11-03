@@ -1,14 +1,16 @@
 #!/usr/bin/env bash
 # Deploy one commit's package (#5) to a pipeline environment. Called by
-# .github/workflows/deploy-staging.yml (#7); live (#11) adds --env live here.
+# .github/workflows/deploy-staging.yml (#7) and .github/workflows/release.yml (#11).
 #
 #   deploy/deploy.sh --env staging --sha <40 hex>
+#   deploy/deploy.sh --env live --release vX.Y.Z[-rc.N] [--dry-run]
 #
-# Needs: GH_TOKEN (actions: read, to download the artifact), AWS credentials that can read the
-# environment's SSM_PATH (the workflow assumes the role by OIDC), aws, gh, jq, ssh, curl, unzip, and
-# docker (to make the bcrypt line with htpasswd from a pinned httpd image).
+# Needs: GH_TOKEN (staging: actions: read, to download the artifact; live: contents: read and
+# statuses: read), AWS credentials that can read the environment's SSM_PATH (the workflow assumes the
+# role by OIDC), aws, gh, jq, ssh, curl; staging also unzip and docker (to make the bcrypt line with
+# htpasswd from a pinned httpd image); live also git (a checkout of the tag with main's history).
 #
-# Steps:
+# Staging, steps:
 #   1. Download artifact package-<sha> that CI uploaded for that commit on main and check its .sha256.
 #      Never rebuilds: if the artifact is gone (kept 90 days), stop.
 #   2. Read deploy/environments/<env>.conf (as data, known keys only) and Parameter Store <SSM_PATH>*.
@@ -21,15 +23,33 @@
 #   5. deploy/smoke-test.sh --env <env>. A failed smoke test fails the deploy; nothing is undone
 #      (staging keeps the new install; a manual run with the previous sha puts the old one back).
 #
-# Writes package_sha256=<64 hex> to GITHUB_OUTPUT as soon as the package is checked (for the
-# staging/deploy status). The SSH key is the only secret on disk: a mode-600 temp file, removed on
-# exit (also on failure).
+# Live (#11): the package of a published release, the very file that passed staging. Steps:
+#   1. Guards, before anything reaches AWS or the server: the run's triggering actor is in
+#      deploy/live-actors (as checked out from the tag); the run is on refs/tags/<release> and the
+#      checkout is that tag's commit, which is on main; the release is published (not a draft) and
+#      has the assets romafederico-site-<commit>.tar.gz and its .sha256; the package matches its
+#      .sha256, and that checksum equals both the release's "Staging proof" sha256
+#      (deploy/draft-release.sh, #10) and the commit's staging/deploy status description
+#      ("sha256 <64 hex>", #7).
+#   2. Read deploy/environments/live.conf and only <SSM_PATH>DEPLOY_SSH_KEY (masked).
+#   3. Over SSH send only rf-live-gate commands (#8): put-package <sha256>, backup <label>
+#      (the release with dots as dashes, v1.0.0 → v1-0-0: the gate allows a-z 0-9 - only),
+#      install <sha256> <release>, current (must report the release and package).
+#   4. deploy/smoke-test.sh --env live.
+#   Dry run (--dry-run, or a pre-release: vX.Y.Z-rc.N or marked pre-release on GitHub): the guards,
+#   put-package, backup and current only. Never install, no smoke test (live still runs the old site).
+#
+# Writes to GITHUB_OUTPUT: package_sha256=<64 hex> as soon as the package is checked (staging: for
+# the staging/deploy status). Live also: commit, package, release_id and dry_run once the release is
+# known, backup=<gate's BACKUP= name> as soon as the backup exists, and failed_step=<step> on failure
+# (guards, settings, put-package, backup, install, current, smoke-test), for the release notes.
+# The SSH key is the only secret on disk: a mode-600 temp file, removed on exit (also on failure).
 # Backticks in single quotes are Markdown for the run summary.
 # shellcheck disable=SC2016
 set -euo pipefail
 
 DEPLOY_ROOT=$(cd "$(dirname "$0")" && pwd)
-ENVIRONMENTS="staging"
+ENVIRONMENTS="staging live"
 REPO="${GITHUB_REPOSITORY:-romafederico/romafederico.com}"
 REQUIRED_PARAMS="BASIC_AUTH_USER BASIC_AUTH_PASSWORD DEPLOY_SSH_KEY"
 # htpasswd from Apache's own image; bump tag and digest together.
@@ -40,13 +60,17 @@ log() { echo "==> $*"; }
 summary() { if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then printf '%s\n' "$@" >> "$GITHUB_STEP_SUMMARY"; fi; }
 output() { if [ -n "${GITHUB_OUTPUT:-}" ]; then printf '%s=%s\n' "$1" "$2" >> "$GITHUB_OUTPUT"; fi; }
 
-USAGE="usage: deploy.sh --env staging --sha <40 hex>"
+USAGE="usage: deploy.sh --env staging --sha <40 hex> | --env live --release vX.Y.Z[-rc.N] [--dry-run]"
 ENV_NAME=""
 SHA=""
+RELEASE=""
+DRY_RUN=false
 while [ $# -gt 0 ]; do
   case "$1" in
     --env) ENV_NAME="${2:-}"; shift 2;;
     --sha) SHA="${2:-}"; shift 2;;
+    --release) RELEASE="${2:-}"; shift 2;;
+    --dry-run) DRY_RUN=true; shift;;
     *) die "unknown argument: $1 ($USAGE)";;
   esac
 done
@@ -54,12 +78,40 @@ case " $ENVIRONMENTS " in
   *" $ENV_NAME "*) ;;
   *) die "--env must be one of: $ENVIRONMENTS (got '$ENV_NAME')";;
 esac
-[[ "$SHA" =~ ^[0-9a-f]{40}$ ]] || die "--sha must be a full commit sha, 40 hex (got '$SHA')"
-VERSION="sha-${SHA:0:7}"
+if [ "$ENV_NAME" = live ]; then
+  # Only the logins listed may start a live deploy. The list is the one in the checked-out tag:
+  # changing it needs a reviewed PR and a release.
+  ACTORS_FILE="$DEPLOY_ROOT/live-actors"
+  [ -f "$ACTORS_FILE" ] || die "missing $ACTORS_FILE: nobody may deploy live"
+  ACTOR="${GITHUB_TRIGGERING_ACTOR:-}"
+  if ! [[ "$ACTOR" =~ ^[A-Za-z0-9-]+$ ]] || ! grep -vE '^[[:space:]]*(#|$)' "$ACTORS_FILE" | grep -qxF -- "$ACTOR"; then
+    die "'${ACTOR:-unset}' is not in deploy/live-actors: only those logins may start a live deploy"
+  fi
+  log "ok: started by $ACTOR (deploy/live-actors)"
+  [ -z "$SHA" ] || die "live takes --release vX.Y.Z, not --sha: it installs the package that release's commit passed staging with"
+  [[ "$RELEASE" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-rc\.[1-9][0-9]*)?$ ]] \
+    || die "--release must be vX.Y.Z or vX.Y.Z-rc.N (got '$RELEASE')"
+  if [ -n "${BASH_REMATCH[4]}" ] && [ "$DRY_RUN" = false ]; then
+    log "$RELEASE is a release candidate: dry run"
+    DRY_RUN=true
+  fi
+  # Live deploys only from the release's own tag run (the AWS role trusts refs/tags/v* only, #3;
+  # this makes the script refuse on its own too).
+  [ "${GITHUB_REF:-}" = "refs/tags/$RELEASE" ] \
+    || die "live deploys only from a run on tag refs/tags/$RELEASE (GITHUB_REF is '${GITHUB_REF:-unset}')"
+  # The gate's backup label allows a-z 0-9 - only (#8).
+  BACKUP_LABEL="${RELEASE//./-}"
+  TITLE="Live deploy $RELEASE"
+else
+  if [ -n "$RELEASE" ] || [ "$DRY_RUN" = true ]; then die "--release and --dry-run are for live only"; fi
+  [[ "$SHA" =~ ^[0-9a-f]{40}$ ]] || die "--sha must be a full commit sha, 40 hex (got '$SHA')"
+  VERSION="sha-${SHA:0:7}"
+fi
 
 WORK=$(mktemp -d "${RUNNER_TEMP:-/tmp}/deploy.XXXXXX")
 KEY_FILE="$WORK/key"
-trap 'rm -rf "$WORK"' EXIT
+STEP=guards     # live: the step running now, for failed_step
+BACKUP=""
 
 # Read deploy/environments/<env>.conf as data, not as a script: only these keys. Sets CONF, CONF_FILE,
 # KNOWN_HOSTS and SSM_PATH. Arguments: the keys that must be set.
@@ -104,6 +156,173 @@ gate() {
     -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$KNOWN_HOSTS" -o GlobalKnownHostsFile=/dev/null \
     "${CONF[DEPLOY_USER]}@${CONF[DEPLOY_HOST]}" "$*"
 }
+
+on_exit() {
+  local rc=$?
+  set +e
+  if [ "$rc" != 0 ] && [ "$ENV_NAME" = live ]; then
+    output failed_step "$STEP"
+    {
+      echo
+      echo "### $TITLE failed at $STEP"
+      echo
+      case "$STEP" in
+        guards|settings|put-package) echo "The live site was not changed: nothing was installed.";;
+        backup) echo "The live site was not changed: the backup did not complete, so nothing was installed.";;
+        install) echo "The gate puts the previous site folder back if the install fails; check the gate's messages above.";;
+        *) echo "**The new package is installed on the live site**, but the checks after it failed; see above.";;
+      esac
+      echo
+      if [ -n "$BACKUP" ]; then
+        echo "- Backup before deploy: \`$BACKUP\` (.tgz in ~/rf-backups)"
+      else
+        echo "- Backup before deploy: none made"
+      fi
+    } > "$WORK/failure.md"
+    if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then cat "$WORK/failure.md" >> "$GITHUB_STEP_SUMMARY"; else cat "$WORK/failure.md"; fi
+  fi
+  rm -rf "$WORK"
+  exit "$rc"
+}
+trap on_exit EXIT
+
+# --- Live --------------------------------------------------------------------
+
+deploy_live() {
+  local commit release_json release_id prerelease ids f sum_name proofs state description out current smoke_rc key
+
+  # 1. Guards. The checkout (fetch-depth 0) is the tagged commit; main is fetched fresh.
+  log "Release guards for $RELEASE"
+  commit=$(git rev-parse --verify -q "refs/tags/$RELEASE^{commit}" || true)
+  [[ "$commit" =~ ^[0-9a-f]{40}$ ]] || die "tag $RELEASE not found in the checkout"
+  [ "$(git rev-parse HEAD)" = "$commit" ] || die "the checkout is not the commit tagged $RELEASE ($commit)"
+  git fetch -q origin main || die "could not fetch main"
+  git merge-base --is-ancestor "$commit" FETCH_HEAD || die "$RELEASE ($commit) is not on main"
+  log "ok: $RELEASE is $commit, on main"
+
+  # GitHub finds no draft by tag (a draft has no tag); check the flag anyway.
+  release_json=$(gh api "repos/$REPO/releases/tags/$RELEASE" 2>/dev/null || true)
+  [ "$(jq -r '.draft' <<< "$release_json" 2>/dev/null)" = false ] \
+    || die "no published release $RELEASE (only Federico publishes releases; a draft does not deploy)"
+  release_id=$(jq -r .id <<< "$release_json")
+  [[ "$release_id" =~ ^[0-9]+$ ]] || die "release $RELEASE has no id"
+  prerelease=$(jq -r '.prerelease' <<< "$release_json")
+  if [ "$prerelease" = true ] && [ "$DRY_RUN" = false ]; then
+    log "$RELEASE is marked pre-release on GitHub: dry run"
+    DRY_RUN=true
+  fi
+  output dry_run "$DRY_RUN"
+  output release_id "$release_id"
+  output commit "$commit"
+  log "ok: release $RELEASE is published$([ "$prerelease" = true ] && echo ' (pre-release)')"
+
+  PKG_NAME="romafederico-site-$commit.tar.gz"
+  output package "$PKG_NAME"
+  mkdir "$WORK/package"
+  for f in "$PKG_NAME" "$PKG_NAME.sha256"; do
+    ids=$(jq -r --arg n "$f" '[.assets[]? | select(.name == $n and .state == "uploaded") | .id] | map(tostring) | join(" ")' <<< "$release_json")
+    [[ "$ids" =~ ^[0-9]+$ ]] || die "release $RELEASE has no asset $f (prepare releases with deploy/draft-release.sh)"
+    gh api -H "Accept: application/octet-stream" "repos/$REPO/releases/assets/$ids" > "$WORK/package/$f" \
+      || die "could not download asset $f of release $RELEASE"
+  done
+  PACKAGE="$WORK/package/$PKG_NAME"
+  read -r PACKAGE_SHA256 sum_name < "$PACKAGE.sha256" || true
+  if ! [[ "${PACKAGE_SHA256:-}" =~ ^[0-9a-f]{64}$ ]] || [ "${sum_name:-}" != "$PKG_NAME" ]; then
+    die "$PKG_NAME.sha256 is not '<64 hex>  $PKG_NAME'"
+  fi
+  (cd "$WORK/package" && sha256sum -c --quiet "$PKG_NAME.sha256") || die "$PKG_NAME does not match its .sha256"
+
+  # The draft's "Staging proof" (#10) names the package staging ran; edits in the web form add \r.
+  proofs=$(jq -r '.body // ""' <<< "$release_json" | tr -d '\r' \
+    | awk '/^## /{ on = ($0 == "## Staging proof") } on' | grep -oE '^- sha256: `[0-9a-f]{64}`$' | grep -oE '[0-9a-f]{64}' | sort -u || true)
+  [ -n "$proofs" ] || die "release $RELEASE has no Staging proof sha256 (prepare releases with deploy/draft-release.sh)"
+  [ "$(grep -c . <<< "$proofs")" = 1 ] || die "release $RELEASE's Staging proof names more than one sha256"
+  [ "$proofs" = "$PACKAGE_SHA256" ] \
+    || die "$PKG_NAME is sha256 $PACKAGE_SHA256, but the release's Staging proof says $proofs"
+
+  IFS=$'\t' read -r state description < <(gh api "repos/$REPO/commits/$commit/status" \
+    -q '.statuses[] | select(.context == "staging/deploy") | [.state, .description] | @tsv') || true
+  [ "${state:-}" = success ] || die "staging/deploy for $commit is '${state:-missing}', not success: it did not pass staging"
+  [ "${description#sha256 }" = "$PACKAGE_SHA256" ] \
+    || die "$PKG_NAME is sha256 $PACKAGE_SHA256, but staging/deploy for $commit says '$description'"
+  log "ok: $PKG_NAME sha256 $PACKAGE_SHA256 = Staging proof = staging/deploy"
+  output package_sha256 "$PACKAGE_SHA256"
+  summary "### $TITLE$([ "$DRY_RUN" = true ] && echo ' (dry run)')" "" \
+    "- Started by: \`$ACTOR\`" "- Commit: \`$commit\`" "- Package: \`$PKG_NAME\`, sha256 \`$PACKAGE_SHA256\`" ""
+
+  # 2. Settings and the one parameter.
+  STEP=settings
+  read_conf DEPLOY_HOST DEPLOY_USER SITE_URL AWS_REGION SSM_PATH
+  log "Reading ${SSM_PATH}DEPLOY_SSH_KEY"
+  out=$(aws ssm get-parameters --names "${SSM_PATH}DEPLOY_SSH_KEY" --with-decryption \
+    --region "${CONF[AWS_REGION]}" --output json) || die "could not read ${SSM_PATH}DEPLOY_SSH_KEY from Parameter Store"
+  key=$(jq -r --arg n "${SSM_PATH}DEPLOY_SSH_KEY" '.Parameters[] | select(.Name == $n) | .Value' <<< "$out")
+  unset out
+  [ -n "$key" ] || die "missing ${SSM_PATH}DEPLOY_SSH_KEY in Parameter Store (#6): nothing was sent to the server"
+  mask "$key"
+  ( umask 077; printf '%s\n' "${key%$'\n'}" > "$KEY_FILE" )
+  chmod 600 "$KEY_FILE"
+  unset key
+
+  # 3. Through rf-live-gate (#8). Its progress goes to stderr (the log), results to stdout.
+  STEP=put-package
+  log "put-package $PACKAGE_SHA256"
+  out=$(gate put-package "$PACKAGE_SHA256" < "$PACKAGE") || die "put-package failed"
+  echo "$out"
+  grep -q "^PACKAGE=$PACKAGE_SHA256 " <<< "$out" || die "put-package did not confirm $PACKAGE_SHA256"
+
+  STEP=backup
+  log "backup $BACKUP_LABEL (site folder, ~/rf-backups)"
+  out=$(gate backup "$BACKUP_LABEL" < /dev/null) || die "backup failed: nothing was installed"
+  echo "$out"
+  BACKUP=$(grep -oE "^BACKUP=live-[0-9]{8}-[0-9]{6}-$BACKUP_LABEL$" <<< "$out" | cut -d= -f2 || true)
+  [ -n "$BACKUP" ] || die "backup did not report BACKUP=live-<stamp>-$BACKUP_LABEL: nothing was installed"
+  output backup "$BACKUP"
+  summary "- Backup before deploy: \`$BACKUP\` (.tgz in ~/rf-backups)"
+
+  if [ "$DRY_RUN" = true ]; then
+    STEP=current
+    log "dry run: not installing; live runs:"
+    gate current < /dev/null || die "current failed"
+    summary "" "**Dry run:** guards, put-package and backup done. No install, no smoke test; the live site was not changed."
+    log "Done (dry run): $RELEASE checked, package on the server, backup $BACKUP"
+    return 0
+  fi
+
+  STEP=install
+  log "install $PACKAGE_SHA256 $RELEASE"
+  out=$(gate install "$PACKAGE_SHA256" "$RELEASE" < /dev/null) || die "install failed"
+  echo "$out"
+  grep -qx "INSTALLED=$RELEASE $PACKAGE_SHA256" <<< "$out" || die "install did not confirm $RELEASE $PACKAGE_SHA256"
+
+  STEP=current
+  current=$(gate current < /dev/null) || die "current failed"
+  echo "$current"
+  [ "$(jq -r '[.environment, .version, .commit, .package_sha256] | join(" ")' <<< "$current" 2>/dev/null)" \
+    = "live $RELEASE $commit $PACKAGE_SHA256" ] \
+    || die "current reports '$current', not live $RELEASE $commit $PACKAGE_SHA256"
+
+  # 4. Smoke test, no password on live.
+  STEP=smoke-test
+  log "Smoke test ${CONF[SITE_URL]}"
+  set +e
+  env -u BASIC_AUTH_USER -u BASIC_AUTH_PASSWORD \
+    "$DEPLOY_ROOT/smoke-test.sh" --env live --commit "$commit" --version "$RELEASE" --package-sha256 "$PACKAGE_SHA256" \
+    2>&1 | tee "$WORK/smoke.log"
+  smoke_rc=${PIPESTATUS[0]}
+  set -e
+  summary "" "Smoke test:" '```' "$(cat "$WORK/smoke.log")" '```'
+  [ "$smoke_rc" = 0 ] || die "smoke test failed against ${CONF[SITE_URL]}"
+  STEP=finished
+  log "Done: ${CONF[SITE_URL]} runs $RELEASE (sha256 $PACKAGE_SHA256), backup $BACKUP"
+}
+
+if [ "$ENV_NAME" = live ]; then
+  deploy_live
+  exit 0
+fi
+
+# --- Staging -----------------------------------------------------------------
 
 # --- 1. Package --------------------------------------------------------------
 

@@ -1,0 +1,120 @@
+# A published release vX.Y.Z deploys to the live site the very package that passed staging (#11).
+# Publishing the draft (#10, deploy/draft-release.sh) creates the tag; only Federico publishes, and
+# publishing is the approval. The guards, backup, install and smoke test are in
+# deploy/deploy.sh --env live. No GitHub secrets or variables: target settings are in
+# deploy/environments/live.conf, the deploy key comes from Parameter Store through the OIDC role
+# romafederico-gha-live, which trusts refs/tags/v* only (#3).
+#
+# Dry run (guards, put-package and backup; no install, no smoke test, no Live deploy notes):
+#   - Run workflow (workflow_dispatch) on a v* tag, or
+#   - a pre-release vX.Y.Z-rc.N (the rehearsal before v1.0.0, #14).
+name: Release live
+
+on:
+  push:
+    tags: ['v*.*.*']
+  workflow_dispatch:
+
+permissions: {}
+
+# Never two live deploys at once; a running one is never cancelled. Rollback (#12) uses the same group.
+concurrency:
+  group: deploy-live
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    name: deploy
+    # Tags only (a dispatch on a branch does nothing); the AWS role and the script refuse other refs too.
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    # Read-only on the repo. The release notes are edited by the next job.
+    permissions:
+      contents: read
+      id-token: write
+      statuses: read
+    outputs:
+      release_id: ${{ steps.deploy.outputs.release_id }}
+      dry_run: ${{ steps.deploy.outputs.dry_run }}
+      package: ${{ steps.deploy.outputs.package }}
+      package_sha256: ${{ steps.deploy.outputs.package_sha256 }}
+      backup: ${{ steps.deploy.outputs.backup }}
+      failed_step: ${{ steps.deploy.outputs.failed_step }}
+    env:
+      RELEASE: ${{ github.ref_name }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      # The tagged commit, with history, for the "on main" guard.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Read target settings
+        id: conf
+        run: |
+          for key in AWS_ROLE_ARN AWS_REGION; do
+            value=$(grep -E "^$key=" deploy/environments/live.conf | cut -d= -f2-)
+            [ -n "$value" ] || { echo "::error::$key missing in deploy/environments/live.conf"; exit 1; }
+            echo "$key=$value" >> "$GITHUB_OUTPUT"
+          done
+
+      - uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
+        with:
+          role-to-assume: ${{ steps.conf.outputs.AWS_ROLE_ARN }}
+          aws-region: ${{ steps.conf.outputs.AWS_REGION }}
+          role-session-name: romafederico-release-live-${{ github.run_id }}
+
+      - name: Guards, backup, install and smoke test
+        id: deploy
+        env:
+          DRY_RUN_FLAG: ${{ github.event_name == 'workflow_dispatch' && '--dry-run' || '' }}
+        run: |
+          # shellcheck disable=SC2086 # empty or one word
+          deploy/deploy.sh --env live --release "$RELEASE" $DRY_RUN_FLAG
+
+  # Every real live deploy is recorded in the release notes, also when it failed: then marked FAILED
+  # at the step, with the backup if one was made. Not for dry runs, and not when the release was
+  # never found (release_id is only set once it is known to be published).
+  notes:
+    name: release notes
+    needs: deploy
+    if: always() && startsWith(github.ref, 'refs/tags/v') && github.event_name == 'push' && needs.deploy.outputs.release_id != '' && needs.deploy.outputs.dry_run != 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      RELEASE: ${{ github.ref_name }}
+      RESULT: ${{ needs.deploy.result }}
+      PACKAGE: ${{ needs.deploy.outputs.package }}
+      PACKAGE_SHA256: ${{ needs.deploy.outputs.package_sha256 }}
+      BACKUP: ${{ needs.deploy.outputs.backup }}
+      FAILED_STEP: ${{ needs.deploy.outputs.failed_step }}
+      RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}/attempts/${{ github.run_attempt }}
+    steps:
+      - name: Append the Live deploy section to the release notes
+        run: |
+          release_json=$(gh api "repos/$GITHUB_REPOSITORY/releases/tags/$RELEASE")
+          id=$(jq -r 'select(.draft == false and .prerelease == false) | .id' <<< "$release_json")
+          [[ "$id" =~ ^[0-9]+$ ]] || { echo "::warning::$RELEASE is not a published full release: nothing to note"; exit 0; }
+          if [ "$RESULT" = success ]; then
+            heading="## Live deploy"
+          else
+            heading="## Live deploy: FAILED at ${FAILED_STEP:-an unknown step (run $RESULT)}"
+          fi
+          if [ -n "$PACKAGE_SHA256" ]; then package_line="$PACKAGE, sha256 $PACKAGE_SHA256"; else package_line="not checked"; fi
+          if [ -n "$BACKUP" ]; then backup_line="$BACKUP.tgz (in ~/rf-backups)"; else backup_line="none made"; fi
+          section="$heading
+
+          - Package: $package_line
+          - Backup before deploy: $backup_line
+          - Run: $RUN_URL
+          - At: $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          body="$(jq -r '.body // ""' <<< "$release_json")
+
+          $section"
+          gh api -X PATCH "repos/$GITHUB_REPOSITORY/releases/$id" -f body="$body" > /dev/null
+          printf '%s\n' "$section" >> "$GITHUB_STEP_SUMMARY"
