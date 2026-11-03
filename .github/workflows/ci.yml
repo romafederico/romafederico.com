@@ -132,6 +132,10 @@ jobs:
       - name: actionlint
         run: docker run --rm -v "$PWD:/repo" -w /repo "$ACTIONLINT_IMAGE" -color
 
+      # deploy/deploy.sh and deploy/smoke-test.sh (#7) with fake gh, aws, ssh, docker and curl: nothing leaves the runner.
+      - name: Deploy tests
+        run: deploy/test/deploy-test.sh
+
   # One package per commit (#5). Built on every PR and push; uploaded on push to main only.
   # Staging (#7) deploys that artifact and never rebuilds; the draft release (#10) copies it.
   # links, page-load and no-js run again on the unpacked site/, so a file missing from deploy/site-files fails here.

@@ -1,0 +1,145 @@
+# Every push to main that passes CI goes to staging (#7): deploy CI's package for that commit with
+# deploy/deploy.sh (never rebuilt), smoke test, report a commit status.
+# The status "staging/deploy" (description "sha256 <package checksum>") is the "passed staging" proof
+# used by releases (#10).
+# No GitHub secrets or variables: target settings are committed in deploy/environments/, secrets come
+# from Parameter Store through the OIDC role (which trusts main only).
+# Manual run: Actions -> Deploy staging -> Run workflow, Use workflow from = main, to deploy an older
+# commit on main whose package artifact still exists (90 days), e.g. to put the previous one back.
+# It never builds and never runs from another branch.
+name: Deploy staging
+
+on:
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      sha:
+        description: "Full commit sha (40 hex) on main whose package to deploy (empty = main's current commit)"
+        required: false
+        default: ""
+        type: string
+
+permissions: {}
+
+# One deploy at a time; a running deploy is never cancelled halfway.
+concurrency:
+  group: deploy-staging
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    name: deploy
+    # Only CI runs for pushes to main that passed (not pull requests), or a manual run on main.
+    if: >-
+      (github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.event == 'push')
+      || (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main')
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      actions: read
+      id-token: write
+      statuses: write
+    env:
+      MANUAL: ${{ github.event_name == 'workflow_dispatch' }}
+      RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      # The commit to deploy: the one CI checked (not whatever main is now), or for a manual run the
+      # given commit, which must be on main.
+      - name: Pick commit
+        env:
+          CI_SHA: ${{ github.event.workflow_run.head_sha }}
+          SHA_INPUT: ${{ inputs.sha }}
+        run: |
+          if [ "$MANUAL" != true ]; then
+            sha="$CI_SHA"
+          elif [ -z "$SHA_INPUT" ]; then
+            sha="$GITHUB_SHA"
+          else
+            [[ "$SHA_INPUT" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::sha must be 40 hex (got '$SHA_INPUT')"; exit 1; }
+            sha="$SHA_INPUT"
+            relation=$(gh api "repos/${{ github.repository }}/compare/$sha...$GITHUB_SHA" -q .status 2>/dev/null || true)
+            case "$relation" in
+              ahead|identical) ;;
+              *) echo "::error::commit $sha is not on main ('${relation:-not found}')"; exit 1;;
+            esac
+          fi
+          echo "SHA=$sha" >> "$GITHUB_ENV"
+          if [ "$MANUAL" = true ]; then
+            {
+              echo "### Manual run"
+              echo
+              echo "- Started by \`$GITHUB_TRIGGERING_ACTOR\`, scripts and settings from main \`$GITHUB_SHA\`"
+              echo "- Deploying the package of \`$sha\`"
+              echo
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      # Scripts and settings: the deployed commit's, or main's for a manual run.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && github.sha || github.event.workflow_run.head_sha }}
+          persist-credentials: false
+
+      # A manual run leaves the status alone until it succeeds: a failed rehearsal must not take away
+      # an older commit's "passed staging" proof.
+      - name: Status pending
+        if: env.MANUAL != 'true'
+        run: |
+          gh api "repos/${{ github.repository }}/statuses/$SHA" -f state=pending \
+            -f context=staging/deploy -f target_url="$RUN_URL" -f description="Deploying to staging" > /dev/null
+
+      - name: Read target settings
+        id: conf
+        run: |
+          for key in AWS_ROLE_ARN AWS_REGION; do
+            value=$(grep -E "^$key=" deploy/environments/staging.conf | cut -d= -f2-)
+            [ -n "$value" ] || { echo "::error::$key missing in deploy/environments/staging.conf"; exit 1; }
+            echo "$key=$value" >> "$GITHUB_OUTPUT"
+          done
+
+      - uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
+        with:
+          role-to-assume: ${{ steps.conf.outputs.AWS_ROLE_ARN }}
+          aws-region: ${{ steps.conf.outputs.AWS_REGION }}
+          role-session-name: romafederico-deploy-staging-${{ github.run_id }}
+
+      # One-off (#3): the staging role must not read the live path. Remove this step once a run has
+      # shown the refusal; the CoS then deletes /romafederico/live/LOCK_TEST (#6).
+      - name: Lock check (staging role cannot read /romafederico/live/)
+        env:
+          AWS_REGION: ${{ steps.conf.outputs.AWS_REGION }}
+        run: |
+          set +e
+          out=$(aws ssm get-parameters --names /romafederico/live/LOCK_TEST --region "$AWS_REGION" --output json 2>&1)
+          rc=$?
+          set -e
+          if [ "$rc" != 0 ] && grep -q AccessDenied <<< "$out"; then
+            echo "ok: refused: $(grep -o 'AccessDenied[^.]*' <<< "$out" | head -n1)"
+            { echo "### Lock check (#3)"; echo; echo "Staging role reading \`/romafederico/live/LOCK_TEST\`: **refused** (AccessDenied)."; echo; } >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "::error::the staging role was not refused /romafederico/live/LOCK_TEST (exit $rc): not deploying"
+            exit 1
+          fi
+
+      - name: Deploy and smoke test
+        id: deploy
+        run: deploy/deploy.sh --env staging --sha "$SHA"
+
+      - name: Status result
+        if: always() && (env.MANUAL != 'true' || job.status == 'success')
+        env:
+          RESULT: ${{ job.status }}
+          PACKAGE_SHA256: ${{ steps.deploy.outputs.package_sha256 }}
+        run: |
+          if [ "$RESULT" = success ] && [[ "$PACKAGE_SHA256" =~ ^[0-9a-f]{64}$ ]]; then
+            state=success; description="sha256 $PACKAGE_SHA256"
+          else
+            state=failure; description="Staging deploy or smoke test failed${PACKAGE_SHA256:+ (sha256 $PACKAGE_SHA256)}"
+          fi
+          gh api "repos/${{ github.repository }}/statuses/$SHA" -f state="$state" \
+            -f context=staging/deploy -f target_url="$RUN_URL" -f description="${description:0:140}" > /dev/null
