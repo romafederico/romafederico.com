@@ -1,9 +1,11 @@
 #!/usr/bin/env bash
 # Deploy one commit's package (#5) to a pipeline environment. Called by
-# .github/workflows/deploy-staging.yml (#7) and .github/workflows/release.yml (#11).
+# .github/workflows/deploy-staging.yml (#7), .github/workflows/release.yml (#11) and
+# .github/workflows/rollback-live.yml (#12).
 #
 #   deploy/deploy.sh --env staging --sha <40 hex>
 #   deploy/deploy.sh --env live --release vX.Y.Z[-rc.N] [--dry-run]
+#   deploy/deploy.sh --env live --rollback vX.Y.Z [--dry-run]
 #
 # Needs: GH_TOKEN (staging: actions: read, to download the artifact; live: contents: read and
 # statuses: read), AWS credentials that can read the environment's SSM_PATH (the workflow assumes the
@@ -39,6 +41,12 @@
 #   Dry run (--dry-run, or a pre-release: vX.Y.Z-rc.N or marked pre-release on GitHub): the guards,
 #   put-package, backup and current only. Never install, no smoke test (live still runs the old site).
 #
+# Rollback live (#12): --rollback vA.B.C puts an earlier published release back the same way: the
+# same guards (actor, tag run, on main, published, assets, Staging proof, staging/deploy), and if the
+# release's notes record a "## Live deploy" (release.yml), its sha256 must be this package's too. A
+# release candidate or a release marked pre-release never went live: refused. Then put-package,
+# backup rollback-vA-B-C, install, current and the smoke test expecting version vA.B.C.
+#
 # Writes to GITHUB_OUTPUT: package_sha256=<64 hex> as soon as the package is checked (staging: for
 # the staging/deploy status). Live also: commit, package, release_id and dry_run once the release is
 # known, backup=<gate's BACKUP= name> as soon as the backup exists, and failed_step=<step> on failure
@@ -60,16 +68,18 @@ log() { echo "==> $*"; }
 summary() { if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then printf '%s\n' "$@" >> "$GITHUB_STEP_SUMMARY"; fi; }
 output() { if [ -n "${GITHUB_OUTPUT:-}" ]; then printf '%s=%s\n' "$1" "$2" >> "$GITHUB_OUTPUT"; fi; }
 
-USAGE="usage: deploy.sh --env staging --sha <40 hex> | --env live --release vX.Y.Z[-rc.N] [--dry-run]"
+USAGE="usage: deploy.sh --env staging --sha <40 hex> | --env live --release vX.Y.Z[-rc.N] [--dry-run] | --env live --rollback vX.Y.Z [--dry-run]"
 ENV_NAME=""
 SHA=""
 RELEASE=""
+ROLLBACK_TO=""
 DRY_RUN=false
 while [ $# -gt 0 ]; do
   case "$1" in
     --env) ENV_NAME="${2:-}"; shift 2;;
     --sha) SHA="${2:-}"; shift 2;;
     --release) RELEASE="${2:-}"; shift 2;;
+    --rollback) ROLLBACK_TO="${2:-}"; shift 2;;
     --dry-run) DRY_RUN=true; shift;;
     *) die "unknown argument: $1 ($USAGE)";;
   esac
@@ -78,17 +88,26 @@ case " $ENVIRONMENTS " in
   *" $ENV_NAME "*) ;;
   *) die "--env must be one of: $ENVIRONMENTS (got '$ENV_NAME')";;
 esac
+ROLLBACK=false
 if [ "$ENV_NAME" = live ]; then
-  # Only the logins listed may start a live deploy. The list is the one in the checked-out tag:
+  # Only the logins listed may start a live deploy or rollback. The list is the one in the checked-out tag:
   # changing it needs a reviewed PR and a release.
   ACTORS_FILE="$DEPLOY_ROOT/live-actors"
   [ -f "$ACTORS_FILE" ] || die "missing $ACTORS_FILE: nobody may deploy live"
   ACTOR="${GITHUB_TRIGGERING_ACTOR:-}"
   if ! [[ "$ACTOR" =~ ^[A-Za-z0-9-]+$ ]] || ! grep -vE '^[[:space:]]*(#|$)' "$ACTORS_FILE" | grep -qxF -- "$ACTOR"; then
-    die "'${ACTOR:-unset}' is not in deploy/live-actors: only those logins may start a live deploy"
+    die "'${ACTOR:-unset}' is not in deploy/live-actors: only those logins may start a live deploy or rollback"
   fi
   log "ok: started by $ACTOR (deploy/live-actors)"
   [ -z "$SHA" ] || die "live takes --release vX.Y.Z, not --sha: it installs the package that release's commit passed staging with"
+  if [ -n "$ROLLBACK_TO" ]; then
+    [ -z "$RELEASE" ] || die "--release or --rollback, not both"
+    # A release candidate never went live, so there is nothing to go back to.
+    [[ "$ROLLBACK_TO" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]] \
+      || die "--rollback must be vX.Y.Z, a published release (got '$ROLLBACK_TO')"
+    RELEASE="$ROLLBACK_TO"
+    ROLLBACK=true
+  fi
   [[ "$RELEASE" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-rc\.[1-9][0-9]*)?$ ]] \
     || die "--release must be vX.Y.Z or vX.Y.Z-rc.N (got '$RELEASE')"
   if [ -n "${BASH_REMATCH[4]}" ] && [ "$DRY_RUN" = false ]; then
@@ -101,9 +120,12 @@ if [ "$ENV_NAME" = live ]; then
     || die "live deploys only from a run on tag refs/tags/$RELEASE (GITHUB_REF is '${GITHUB_REF:-unset}')"
   # The gate's backup label allows a-z 0-9 - only (#8).
   BACKUP_LABEL="${RELEASE//./-}"
-  TITLE="Live deploy $RELEASE"
+  [ "$ROLLBACK" = false ] || BACKUP_LABEL="rollback-$BACKUP_LABEL"
+  # Headings for the run summary.
+  if [ "$ROLLBACK" = true ]; then TITLE="Rollback live to $RELEASE"; BEFORE="Backup before rollback"
+  else TITLE="Live deploy $RELEASE"; BEFORE="Backup before deploy"; fi
 else
-  if [ -n "$RELEASE" ] || [ "$DRY_RUN" = true ]; then die "--release and --dry-run are for live only"; fi
+  if [ -n "$RELEASE" ] || [ -n "$ROLLBACK_TO" ] || [ "$DRY_RUN" = true ]; then die "--release, --rollback and --dry-run are for live only"; fi
   [[ "$SHA" =~ ^[0-9a-f]{40}$ ]] || die "--sha must be a full commit sha, 40 hex (got '$SHA')"
   VERSION="sha-${SHA:0:7}"
 fi
@@ -170,13 +192,18 @@ on_exit() {
         guards|settings|put-package) echo "The live site was not changed: nothing was installed.";;
         backup) echo "The live site was not changed: the backup did not complete, so nothing was installed.";;
         install) echo "The gate puts the previous site folder back if the install fails; check the gate's messages above.";;
-        *) echo "**The new package is installed on the live site**, but the checks after it failed; see above.";;
+        *) if [ "$ROLLBACK" = true ]; then
+             echo "**$RELEASE is installed on the live site**, but the checks after it failed; see above."
+           else
+             echo "**The new package is installed on the live site**, but the checks after it failed; see above."
+             echo "To go back: Federico orders **Rollback live** on the previous release's tag (#12)."
+           fi;;
       esac
       echo
       if [ -n "$BACKUP" ]; then
-        echo "- Backup before deploy: \`$BACKUP\` (.tgz in ~/rf-backups)"
+        echo "- $BEFORE: \`$BACKUP\` (.tgz in ~/rf-backups)"
       else
-        echo "- Backup before deploy: none made"
+        echo "- $BEFORE: none made"
       fi
     } > "$WORK/failure.md"
     if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then cat "$WORK/failure.md" >> "$GITHUB_STEP_SUMMARY"; else cat "$WORK/failure.md"; fi
@@ -189,7 +216,7 @@ trap on_exit EXIT
 # --- Live --------------------------------------------------------------------
 
 deploy_live() {
-  local commit release_json release_id prerelease ids f sum_name proofs state description out current smoke_rc key
+  local commit release_json release_id prerelease ids f sum_name proofs state description deployed out current smoke_rc key
 
   # 1. Guards. The checkout (fetch-depth 0) is the tagged commit; main is fetched fresh.
   log "Release guards for $RELEASE"
@@ -207,6 +234,9 @@ deploy_live() {
   release_id=$(jq -r .id <<< "$release_json")
   [[ "$release_id" =~ ^[0-9]+$ ]] || die "release $RELEASE has no id"
   prerelease=$(jq -r '.prerelease' <<< "$release_json")
+  if [ "$prerelease" = true ] && [ "$ROLLBACK" = true ]; then
+    die "$RELEASE is marked pre-release on GitHub: it never went live, so there is nothing to roll back to"
+  fi
   if [ "$prerelease" = true ] && [ "$DRY_RUN" = false ]; then
     log "$RELEASE is marked pre-release on GitHub: dry run"
     DRY_RUN=true
@@ -246,6 +276,19 @@ deploy_live() {
   [ "${description#sha256 }" = "$PACKAGE_SHA256" ] \
     || die "$PKG_NAME is sha256 $PACKAGE_SHA256, but staging/deploy for $commit says '$description'"
   log "ok: $PKG_NAME sha256 $PACKAGE_SHA256 = Staging proof = staging/deploy"
+
+  if [ "$ROLLBACK" = true ]; then
+    # The package live ran for this release, if it went live: every "## Live deploy" section that
+    # release.yml's notes job wrote (#11), also a FAILED one, must name this sha256.
+    deployed=$(jq -r '.body // ""' <<< "$release_json" | tr -d '\r' \
+      | awk '/^## /{ on = ($0 ~ /^## Live deploy/) } on' | grep -oE '^- Package: [^ ]+, sha256 [0-9a-f]{64}$' \
+      | grep -oE '[0-9a-f]{64}$' | sort -u || true)
+    for f in $deployed; do
+      [ "$f" = "$PACKAGE_SHA256" ] || die "the release notes record a live deploy of sha256 $f, not $PACKAGE_SHA256: not rolling back"
+    done
+    if [ -n "$deployed" ]; then log "ok: rollback to $RELEASE uses the package its Live deploy recorded"
+    else log "ok: rollback to $RELEASE uses its Staging proof package (no Live deploy recorded)"; fi
+  fi
   output package_sha256 "$PACKAGE_SHA256"
   summary "### $TITLE$([ "$DRY_RUN" = true ] && echo ' (dry run)')" "" \
     "- Started by: \`$ACTOR\`" "- Commit: \`$commit\`" "- Package: \`$PKG_NAME\`, sha256 \`$PACKAGE_SHA256\`" ""
@@ -278,7 +321,7 @@ deploy_live() {
   BACKUP=$(grep -oE "^BACKUP=live-[0-9]{8}-[0-9]{6}-$BACKUP_LABEL$" <<< "$out" | cut -d= -f2 || true)
   [ -n "$BACKUP" ] || die "backup did not report BACKUP=live-<stamp>-$BACKUP_LABEL: nothing was installed"
   output backup "$BACKUP"
-  summary "- Backup before deploy: \`$BACKUP\` (.tgz in ~/rf-backups)"
+  summary "- $BEFORE: \`$BACKUP\` (.tgz in ~/rf-backups)"
 
   if [ "$DRY_RUN" = true ]; then
     STEP=current
