@@ -136,6 +136,10 @@ jobs:
       - name: Deploy tests
         run: deploy/test/deploy-test.sh
 
+      # deploy/draft-release.sh (#10) with a fake gh and curl: no release is made, nothing leaves the runner.
+      - name: Draft release tests
+        run: deploy/test/draft-release-test.sh
+
   # The script the DreamHost live deploy key is forced to (#8), in a fake home folder
   # with the other two live sites next to it. Never touches a server.
   gate-tests:
