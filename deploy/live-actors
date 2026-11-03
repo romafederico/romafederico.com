@@ -1,0 +1,8 @@
+# GitHub logins that may start a live deploy or rollback (#11, #12): one per
+# line, compared exactly with the run's triggering actor. Read from the
+# checked-out tag, so the list in force is the one in that release. Changing it
+# needs a PR, and so Federico's yes at merge.
+romafederico
+# The CoS account; workers share it, so the CoS safety hook keeps them from
+# starting release/rollback/live runs.
+rfminibbot
