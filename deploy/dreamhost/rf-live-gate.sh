@@ -31,8 +31,10 @@ KEEP_PACKAGES=5
 KEEP_BACKUPS=10
 LOG_KEEP_LINES=5000
 # Names in the live folder that are not in the package but must stay (copied
-# into each new folder). Only by a reviewed PR (#9 step 2).
-KEEP=()
+# into each new folder). Only by a reviewed PR (#9 step 2). DreamHost's own
+# (#22): .dh-diag, the panel's PHP diagnostics (a root-owned symlink, copied
+# as a symlink to the same target), and the empty favicon placeholders.
+KEEP=(.dh-diag favicon.ico favicon.gif)
 
 export PATH=/usr/bin:/bin
 
@@ -210,8 +212,9 @@ cmd_install() {
 
   if [ "${#KEEP[@]}" -gt 0 ]; then
     for name in "${KEEP[@]}"; do
-      [ ! -e "$STAGE/$name" ] || die "package holds $name, which the gate keeps from the live folder"
-      if [ -e "$SITE_DIR/$name" ]; then cp -a "$SITE_DIR/$name" "$STAGE/$name"; fi
+      # -L too: -e follows a symlink, and .dh-diag's target may not be readable.
+      if [ -e "$STAGE/$name" ] || [ -L "$STAGE/$name" ]; then die "package holds $name, which the gate keeps from the live folder"; fi
+      if [ -e "$SITE_DIR/$name" ] || [ -L "$SITE_DIR/$name" ]; then cp -a "$SITE_DIR/$name" "$STAGE/$name"; fi
     done
   fi
 
