@@ -1,0 +1,7 @@
+# The files that make up the site: one path per line, relative to the repo root.
+# deploy/build-package.sh puts exactly these into the package's site/ folder, and the
+# CI checks (tests/sitefiles.py) read this list. Adding a page or image means adding it here.
+# Never list version.json: the gates write it at install time (#5).
+index.html
+style.css
+avatar.jpg

@@ -3,6 +3,7 @@
 Fails on any console error, page error, failed request or response that isn't 2xx/3xx,
 a missing <title>, or avatar.jpg not loading. The browser's own /favicon.ico request is
 ignored: the site has no favicon. Saves a full-page screenshot at 390 and 1440 wide.
+Serves the repo, or $SITE_DIR when it is set (CI / package: the unpacked package's site/).
 Usage: python3 tests/page_load.py <screenshot dir>
 Needs Playwright for Python and its Chromium (CI runs it in mcr.microsoft.com/playwright/python).
 """
@@ -16,7 +17,7 @@ from urllib.parse import unquote, urlparse
 
 from playwright.sync_api import sync_playwright
 
-ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+ROOT = os.path.abspath(os.environ.get("SITE_DIR") or os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 WIDTHS = (390, 1440)
 
 

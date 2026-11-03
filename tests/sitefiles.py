@@ -1,7 +1,8 @@
 """Site files and the local references in them, shared by the CI checks.
 
-Site files are the *.html and *.css at the repo root and the files they reference.
-#5 makes the package's file list the single source; until then this reads the repo root.
+Site files are the paths listed in deploy/site-files, the same list deploy/build-package.sh packs (#5).
+The checks look for them in the repo, or in $SITE_DIR when it is set: CI / package points it at the
+unpacked package's site/, so a file missing from the list fails there.
 """
 
 import os
@@ -9,18 +10,15 @@ import re
 from html.parser import HTMLParser
 from urllib.parse import unquote
 
-ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+ROOT = os.path.abspath(os.environ.get("SITE_DIR") or REPO)
+LIST = os.path.join(REPO, "deploy", "site-files")
 
 # url(...) and @import "..." in CSS (a <style> block or a style="" attribute too).
 CSS_URL = re.compile(r"""url\(\s*(['"]?)(.*?)\1\s*\)|@import\s+(['"])(.*?)\3""", re.I | re.S)
 # Anything with a scheme (https:, mailto:, data:, ...) or protocol-relative (//host) is not a local file.
 EXTERNAL = re.compile(r"^([a-z][a-z0-9+.-]*:|//)", re.I)
 URL_ATTRS = {"href", "src", "poster", "data", "action", "formaction", "cite", "background"}
-
-
-def root_files():
-    """The *.html and *.css at the repo root, sorted."""
-    return sorted(f for f in os.listdir(ROOT) if f.endswith((".html", ".css")))
 
 
 def css_refs(text, line=1):
@@ -104,14 +102,16 @@ def resolve(rel, url):
 
 
 def site_files():
-    """Root *.html and *.css plus every existing local file they reference, sorted."""
-    files = set(root_files())
-    for rel in root_files():
-        for _, url in refs(rel):
-            r = resolve(rel, url)
-            if r and not r[0].startswith("..") and os.path.isfile(os.path.join(ROOT, r[0])):
-                files.add(r[0])
-    return sorted(files)
+    """The paths in deploy/site-files, without comments and blank lines, sorted."""
+    with open(LIST, encoding="utf-8") as f:
+        lines = (line.split("#", 1)[0].strip() for line in f)
+        return sorted({line for line in lines if line})
+
+
+def missing():
+    """(file, 1, message) for every listed site file that isn't in ROOT."""
+    return [(rel, 1, f"listed in deploy/site-files but not in {ROOT}")
+            for rel in site_files() if not os.path.isfile(os.path.join(ROOT, rel))]
 
 
 def report(errors):
