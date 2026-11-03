@@ -1,5 +1,5 @@
 # Check every pull request and every push to main.
-# Check names ("CI / html", "CI / links", "CI / page-load", "CI / no-js", "CI / scripts", "CI / package") are relied on by the merge check: keep them stable.
+# Check names ("CI / html", "CI / links", "CI / page-load", "CI / no-js", "CI / scripts", "CI / package", "CI / gate-tests") are relied on by the merge check: keep them stable.
 # No secrets: nothing here talks to staging or the live site.
 # The checks run in CI only and add nothing to the site: no package.json, no build step, tool versions pinned here.
 # Site files = the paths in deploy/site-files, the same list the package (#5) is built from.
@@ -135,6 +135,18 @@ jobs:
       # deploy/deploy.sh and deploy/smoke-test.sh (#7) with fake gh, aws, ssh, docker and curl: nothing leaves the runner.
       - name: Deploy tests
         run: deploy/test/deploy-test.sh
+
+  # The script the DreamHost live deploy key is forced to (#8), in a fake home folder
+  # with the other two live sites next to it. Never touches a server.
+  gate-tests:
+    name: gate-tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: DreamHost live gate tests
+        run: deploy/test/rf-live-gate-test.sh
 
   # One package per commit (#5). Built on every PR and push; uploaded on push to main only.
   # Staging (#7) deploys that artifact and never rebuilds; the draft release (#10) copies it.
