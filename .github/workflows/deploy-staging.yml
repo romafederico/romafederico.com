@@ -108,24 +108,6 @@ jobs:
           aws-region: ${{ steps.conf.outputs.AWS_REGION }}
           role-session-name: romafederico-deploy-staging-${{ github.run_id }}
 
-      # One-off (#3): the staging role must not read the live path. Remove this step once a run has
-      # shown the refusal; the CoS then deletes /romafederico/live/LOCK_TEST (#6).
-      - name: Lock check (staging role cannot read /romafederico/live/)
-        env:
-          AWS_REGION: ${{ steps.conf.outputs.AWS_REGION }}
-        run: |
-          set +e
-          out=$(aws ssm get-parameters --names /romafederico/live/LOCK_TEST --region "$AWS_REGION" --output json 2>&1)
-          rc=$?
-          set -e
-          if [ "$rc" != 0 ] && grep -q AccessDenied <<< "$out"; then
-            echo "ok: refused: $(grep -o 'AccessDenied[^.]*' <<< "$out" | head -n1)"
-            { echo "### Lock check (#3)"; echo; echo "Staging role reading \`/romafederico/live/LOCK_TEST\`: **refused** (AccessDenied)."; echo; } >> "$GITHUB_STEP_SUMMARY"
-          else
-            echo "::error::the staging role was not refused /romafederico/live/LOCK_TEST (exit $rc): not deploying"
-            exit 1
-          fi
-
       - name: Deploy and smoke test
         id: deploy
         run: deploy/deploy.sh --env staging --sha "$SHA"
