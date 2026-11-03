@@ -31,6 +31,12 @@ flowchart LR
   `deploy/smoke-test.sh` checks the site. The result is the commit status
   `staging/deploy`; `https://staging.romafederico.com/version.json` shows the
   installed commit. Staging is behind basic auth and `noindex`.
+- **Rollback live** (`.github/workflows/rollback-live.yml`, #12): on Federico's
+  order only, Actions → Rollback live → Run workflow with "Use workflow from" =
+  the earlier tag `vA.B.C`. It reinstalls that release's own package through
+  `deploy/deploy.sh --env live --rollback vA.B.C` (same guards as a release,
+  backup `rollback-vA-B-C` first, then the smoke test) and adds a line under
+  `## Live rollbacks` in that release's notes. `dry_run` is on by default.
 - Settings are committed in `deploy/environments/`; secrets live in AWS
   Parameter Store under `/romafederico/staging/*`, read through a GitHub OIDC
   role. The staging deploy uses no GitHub secrets.

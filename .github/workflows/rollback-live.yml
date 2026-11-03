@@ -1,0 +1,124 @@
+# Put an earlier published release vA.B.C back on the live site (#12): that release's own package
+# (the one that passed staging), through the same deploy/deploy.sh, rf-live-gate and smoke test as
+# Release live (#11), after a fresh backup `rollback-vA-B-C`. Restoring a backup .tgz by hand is a
+# separate step (runbook, #13).
+#
+# Start: Actions → Rollback live → Run workflow, "Use workflow from" = the tag vA.B.C to go back to.
+# Federico orders it; Federico, or the CoS on his order, starts it; agents never do (CoS safety
+# hook). Only logins in deploy/live-actors (as in that tag) may start it. dry_run is on by default:
+# guards, put-package, backup and current only, no install. A dispatch runs this file as it is in the
+# tag, so only releases that contain it can be rolled back to this way.
+name: Rollback live
+
+on:
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: Dry run (guards, put-package and backup; no install, no smoke test)
+        type: boolean
+        default: true
+
+permissions: {}
+
+# Shares Release live's group: never two live deploys at once, a running one is never cancelled.
+concurrency:
+  group: deploy-live
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    name: deploy
+    # Tags only: the AWS role (refs/tags/v* only, #3) and the script refuse other refs too.
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    # Read-only on the repo. The release notes are edited by the next job.
+    permissions:
+      contents: read
+      id-token: write
+      statuses: read
+    outputs:
+      dry_run: ${{ steps.deploy.outputs.dry_run }}
+      package_sha256: ${{ steps.deploy.outputs.package_sha256 }}
+      backup: ${{ steps.deploy.outputs.backup }}
+      failed_step: ${{ steps.deploy.outputs.failed_step }}
+    env:
+      RELEASE: ${{ github.ref_name }}
+      GH_TOKEN: ${{ github.token }}
+      ACTOR: ${{ github.triggering_actor }}
+    steps:
+      # First, before checkout or AWS: the starter must be listed in the tag's deploy/live-actors.
+      # deploy.sh checks it again.
+      - name: Who may roll back
+        run: |
+          gh api -H 'Accept: application/vnd.github.raw' \
+            "repos/$GITHUB_REPOSITORY/contents/deploy/live-actors?ref=$GITHUB_SHA" > "$RUNNER_TEMP/actors" \
+            || { echo "::error::no deploy/live-actors in $RELEASE: nobody may roll back to it"; exit 1; }
+          grep -vE '^[[:space:]]*(#|$)' "$RUNNER_TEMP/actors" | grep -qxF -- "$ACTOR" \
+            || { echo "::error::'$ACTOR' is not in deploy/live-actors: only those logins may start a rollback"; exit 1; }
+          echo "Rollback live to $RELEASE started by $ACTOR"
+
+      # The tagged commit, with history, for the "on main" guard.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Read target settings
+        id: conf
+        run: |
+          for key in AWS_ROLE_ARN AWS_REGION; do
+            value=$(grep -E "^$key=" deploy/environments/live.conf | cut -d= -f2-)
+            [ -n "$value" ] || { echo "::error::$key missing in deploy/environments/live.conf"; exit 1; }
+            echo "$key=$value" >> "$GITHUB_OUTPUT"
+          done
+
+      - uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
+        with:
+          role-to-assume: ${{ steps.conf.outputs.AWS_ROLE_ARN }}
+          aws-region: ${{ steps.conf.outputs.AWS_REGION }}
+          role-session-name: romafederico-rollback-live-${{ github.run_id }}
+
+      - name: Guards, backup, install and smoke test
+        id: deploy
+        env:
+          DRY_RUN_FLAG: ${{ inputs.dry_run && '--dry-run' || '' }}
+        run: |
+          # shellcheck disable=SC2086 # empty or one word
+          deploy/deploy.sh --env live --rollback "$RELEASE" $DRY_RUN_FLAG
+
+  # Every rollback run is listed in vA.B.C's notes, with who started it and how it ended, also dry
+  # runs and runs that were refused or failed.
+  notes:
+    name: release notes
+    needs: deploy
+    if: always() && startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      RELEASE: ${{ github.ref_name }}
+      ACTOR: ${{ github.triggering_actor }}
+      RESULT: ${{ needs.deploy.result }}
+      DRY_RUN: ${{ needs.deploy.outputs.dry_run }}
+      BACKUP: ${{ needs.deploy.outputs.backup }}
+      RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}/attempts/${{ github.run_attempt }}
+    steps:
+      - name: Append the rollback run to the release notes
+        run: |
+          release_json=$(gh api "repos/$GITHUB_REPOSITORY/releases/tags/$RELEASE" 2>/dev/null || true)
+          id=$(jq -r 'select(.draft == false) | .id' <<< "$release_json" 2>/dev/null || true)
+          [[ "$id" =~ ^[0-9]+$ ]] || { echo "::warning::no published release $RELEASE: nothing to note"; exit 0; }
+          body=$(jq -r '.body // ""' <<< "$release_json")
+          case "$body" in *"## Live rollbacks"*) ;; *) body="$body
+
+          ## Live rollbacks
+          ";; esac
+          kind=rollback; [ "$DRY_RUN" = true ] && kind="rollback (dry run)"
+          line="- $(date -u +%Y-%m-%dT%H:%M:%SZ) $kind started by \`$ACTOR\`: **$RESULT**${BACKUP:+, backup \`$BACKUP\`}, $RUN_URL"
+          body="$body
+          $line"
+          gh api -X PATCH "repos/$GITHUB_REPOSITORY/releases/$id" -f body="$body" > /dev/null
+          printf '%s\n' "$line" >> "$GITHUB_STEP_SUMMARY"

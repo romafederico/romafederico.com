@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
-# Tests for deploy/deploy.sh and deploy/smoke-test.sh (staging #7, live #11) with fake gh, aws, ssh,
-# docker, curl and a local git repo: nothing leaves the machine. Also checks the guard rails of
-# .github/workflows/deploy-staging.yml and release.yml, and runs release.yml's notes step.
+# Tests for deploy/deploy.sh and deploy/smoke-test.sh (staging #7, live #11, rollback #12) with fake gh,
+# aws, ssh, docker, curl and a local git repo: nothing leaves the machine. Also checks the guard rails
+# of .github/workflows/deploy-staging.yml, release.yml and rollback-live.yml, and runs the notes steps
+# of release.yml and rollback-live.yml.
 # Run: deploy/test/deploy-test.sh
 # Single-quoted $ is meant literally here (bcrypt lines, variables expanded inside check's eval).
 # shellcheck disable=SC2016
@@ -686,7 +687,126 @@ check "smoke test fails: says the new package is installed" 'grep -q "new packag
 check "smoke test fails: key file removed" '[ ! -e "$(cat $T/key-path)" ]'
 rm -rf "$T"
 
-echo "# 14. Live smoke test on its own"
+echo "# 14. Rollback live (#12): an earlier release's own package, after a backup rollback-vA-B-C"
+run_rollback() { # [release] [--dry-run]
+  (cd "$T/repo" && GITHUB_ACTIONS=true deploy/deploy.sh --env live --rollback "${1:-$RELEASE}" ${2:+"$2"}) > "$FAKE/out.log" 2>&1
+  echo $? > "$FAKE/rc"
+}
+# A Live deploy section as release.yml's notes job writes it (#11), with that package's sha256.
+live_deploy_notes() { # <sha256> [heading]
+  jq --arg s "$1" --arg p "$LPKG" --arg h "${2:-## Live deploy}" '.body += "\n\n\($h)\n\n- Package: \($p), sha256 \($s)\n- Backup before deploy: live-20261101-090000-v1-0-0.tgz (in ~/rf-backups)\n- Run: https://github.com/x/actions/runs/5/attempts/1\n- At: 2026-11-01T09:00:00Z"' \
+    "$T/release.json" > "$T/r" && mv "$T/r" "$T/release.json"
+}
+setup_live
+live_deploy_notes "$LSUM"
+run_rollback
+check "rollback: exits 0" '[ "$(rc)" = 0 ] || { cat $T/out.log; false; }'
+# shellcheck disable=SC2034 # used inside check's eval
+expected="put-package $LSUM
+backup rollback-v1-0-0
+install $LSUM $RELEASE
+current"
+check "rollback: put-package, backup rollback-v1-0-0, install, current" '[ "$(cat $T/gate.log)" = "$expected" ] || { cat $T/gate.log; false; }'
+check "rollback: sends the release's own asset byte for byte" 'cmp -s $T/put-package.stdin $T/pkg/$LPKG'
+check "rollback: smoke test expects $RELEASE on /version.json and www" \
+  'grep -qE "^$LIVE_URL/version.json\?" $T/curl.log && grep -qx "https://www.romafederico.com/" $T/curl.log && grep -q "^ok" $T/out.log'
+check "rollback: outputs mode=rollback, dry_run=false, release_id, backup live-<stamp>-rollback-v1-0-0" \
+  '[ "$(out mode)" = rollback ] && [ "$(out dry_run)" = false ] && [ "$(out release_id)" = 7 ] && [ "$(out backup)" = live-20261103-120000-rollback-v1-0-0 ]'
+check "rollback: summary names it, who started it, the package and the backup" \
+  'grep -q "### Rollback live to $RELEASE" $T/summary.md && grep -q "Started by: \`romafederico\`" $T/summary.md && grep -q "$LSUM" $T/summary.md && grep -qxF -- "- Backup before rollback: \`live-20261103-120000-rollback-v1-0-0\` (.tgz in ~/rf-backups)" $T/summary.md'
+check "rollback: the recorded live deploy's sha256 is checked" 'grep -qx "==> ok: rollback to $RELEASE uses the package its Live deploy recorded" $T/out.log'
+check "rollback: key file and work folder removed" '[ ! -e "$(cat $T/key-path)" ] && [ -z "$(ls -A $T/tmp)" ]'
+rm -rf "$T"
+
+setup_live
+run_rollback
+check "rollback of a release with no Live deploy recorded: allowed (Staging proof is enough)" \
+  '[ "$(rc)" = 0 ] && grep -q "install $LSUM" $T/gate.log && grep -qx "==> ok: rollback to $RELEASE uses its Staging proof package (no Live deploy recorded)" $T/out.log'
+rm -rf "$T"
+
+setup_live
+run_rollback "$RELEASE" --dry-run
+# shellcheck disable=SC2034 # used inside check's eval
+expected="put-package $LSUM
+backup rollback-v1-0-0
+current"
+check "rollback --dry-run: put-package, backup, current; no install" '[ "$(rc)" = 0 ] && [ "$(cat $T/gate.log)" = "$expected" ] || { cat $T/gate.log; cat $T/out.log; false; }'
+check "rollback --dry-run: dry_run=true, mode=rollback, no smoke test" '[ "$(out dry_run)" = true ] && [ "$(out mode)" = rollback ] && [ ! -e $T/curl.log ]'
+check "rollback --dry-run: summary says dry run" 'grep -q "### Rollback live to $RELEASE (dry run)" $T/summary.md && grep -q "Dry run" $T/summary.md'
+rm -rf "$T"
+
+setup_live
+GITHUB_TRIGGERING_ACTOR=someone-else run_rollback
+check "rollback by an actor not in deploy/live-actors: refused, nothing called" \
+  '[ "$(rc)" != 0 ] && grep -q "::error::.*someone-else.*not in deploy/live-actors.*rollback" $T/out.log && [ ! -e $T/gh.log ] && nothing_sent'
+GITHUB_REF=refs/heads/main run_rollback
+check "rollback not run on the release tag: refused" '[ "$(rc)" != 0 ] && grep -q "refs/tags/$RELEASE" $T/out.log && nothing_sent'
+GITHUB_REF=refs/tags/v1.1.0 run_rollback
+check "rollback run on another tag: refused" '[ "$(rc)" != 0 ] && grep -q "refs/tags/$RELEASE" $T/out.log && nothing_sent'
+run_rollback v1.0
+check "--rollback v1.0 refused" '[ "$(rc)" != 0 ] && grep -q "::error::--rollback must be vX.Y.Z" $T/out.log && nothing_sent'
+run_rollback v1.0.0-rc.1
+check "--rollback to a release candidate refused (it never went live)" '[ "$(rc)" != 0 ] && grep -q "::error::--rollback must be vX.Y.Z" $T/out.log && nothing_sent'
+(cd "$T/repo" && deploy/deploy.sh --env live --release "$RELEASE" --rollback "$RELEASE") > "$T/out.log" 2>&1; echo $? > "$T/rc"
+check "--release and --rollback together: refused" '[ "$(rc)" != 0 ] && grep -q "not both" $T/out.log && nothing_sent'
+(cd "$T/repo" && deploy/deploy.sh --env staging --sha "$SHA" --rollback "$RELEASE") > "$T/out.log" 2>&1; echo $? > "$T/rc"
+check "staging --rollback: refused" '[ "$(rc)" != 0 ] && grep -q "for live only" $T/out.log && nothing_sent'
+rm -rf "$T"
+
+setup_live
+release_json "$RELEASE" true false "$LSUM"
+run_rollback
+check "rollback to a draft: refused" '[ "$(rc)" != 0 ] && grep -q "no published release $RELEASE" $T/out.log && nothing_sent'
+release_json "$RELEASE" false true "$LSUM"
+run_rollback
+check "rollback to a release marked pre-release: refused (it never went live)" '[ "$(rc)" != 0 ] && grep -q "::error::$RELEASE is marked pre-release" $T/out.log && nothing_sent'
+release_json "$RELEASE" false false "$(printf 'e%.0s' {1..64})"
+run_rollback
+check "rollback: package differs from the Staging proof: refused" '[ "$(rc)" != 0 ] && grep -q "::error::.*Staging proof" $T/out.log && nothing_sent'
+release_json "$RELEASE" false false "$LSUM"
+staging_status success "sha256 $(printf 'e%.0s' {1..64})"
+run_rollback
+check "rollback: package differs from staging/deploy: refused" '[ "$(rc)" != 0 ] && grep -q "::error::.*staging/deploy" $T/out.log && nothing_sent'
+staging_status success "sha256 $LSUM"
+live_deploy_notes "$(printf 'd%.0s' {1..64})"
+run_rollback
+check "rollback: Live deploy recorded another sha256: refused" \
+  '[ "$(rc)" != 0 ] && grep -q "::error::the release notes record a live deploy of sha256 d" $T/out.log && nothing_sent'
+check "rollback refused: summary says the live site was not changed" 'grep -q "Rollback live to $RELEASE failed at guards" $T/summary.md && grep -q "not changed" $T/summary.md'
+release_json "$RELEASE" false false "$LSUM"
+live_deploy_notes "$(printf 'd%.0s' {1..64})" "## Live deploy: FAILED at install"
+run_rollback
+check "rollback: a FAILED Live deploy section with another sha256 also refuses" \
+  '[ "$(rc)" != 0 ] && grep -q "::error::the release notes record a live deploy of sha256 d" $T/out.log && nothing_sent'
+rm -rf "$T"
+
+setup_live
+export FAKE_BACKUP_FAIL=1
+run_rollback
+check "rollback backup fails: no install, failed_step=backup, none made" \
+  '[ "$(rc)" != 0 ] && ! grep -q install $T/gate.log && [ "$(out failed_step)" = backup ] && grep -qxF -- "- Backup before rollback: none made" $T/summary.md'
+rm -rf "$T"
+setup_live
+export FAKE_INSTALL_FAIL=1
+run_rollback
+check "rollback install fails: red, failed_step=install, backup kept" \
+  '[ "$(rc)" != 0 ] && [ "$(out failed_step)" = install ] && [ "$(out backup)" = live-20261103-120000-rollback-v1-0-0 ]'
+check "rollback install fails: summary names the backup" \
+  'grep -q "Rollback live to $RELEASE failed at install" $T/summary.md && grep -qxF -- "- Backup before rollback: \`live-20261103-120000-rollback-v1-0-0\` (.tgz in ~/rf-backups)" $T/summary.md'
+rm -rf "$T"
+setup_live
+export FAKE_README=200
+run_rollback
+check "rollback smoke test fails: failed_step=smoke-test, summary says $RELEASE is installed" \
+  '[ "$(rc)" != 0 ] && [ "$(out failed_step)" = smoke-test ] && grep -q "$RELEASE is installed on the live site" $T/summary.md && ! grep -q "Rollback live\*\* on the previous" $T/summary.md'
+rm -rf "$T"
+setup_live
+export FAKE_README=200
+run_live
+check "release smoke test fails: summary points to Rollback live" 'grep -q "Federico orders \*\*Rollback live\*\* on the previous release" $T/summary.md'
+rm -rf "$T"
+
+echo "# 15. Live smoke test on its own"
 run_live_smoke() {
   "$ROOT/deploy/smoke-test.sh" --env live --commit "$COMMIT" --version "$RELEASE" --package-sha256 "$LSUM" > "$FAKE/out.log" 2>&1
   echo $? > "$FAKE/rc"
@@ -710,7 +830,7 @@ live_smoke_case "/avatar.jpg missing fails" 'FAKE_AVATAR=404' "FAIL /avatar.jpg"
 live_smoke_case "staging's version.json on live fails" 'FAKE_ENV=staging' "FAIL /version.json"
 live_smoke_case "older version on /version.json fails" 'FAKE_VERSION=v0.9.0' "FAIL /version.json"
 
-echo "# 15. release.yml and the live settings"
+echo "# 16. release.yml and the live settings"
 LCONF="$ROOT/deploy/environments/live.conf"
 RWF="$ROOT/.github/workflows/release.yml"
 for kv in DEPLOY_HOST=pdx1-shared-a1-22.dreamhost.com DEPLOY_USER=romafederico SITE_URL=https://romafederico.com \
@@ -745,6 +865,8 @@ check "release.yml: notes after a failed deploy too, never for dry runs or dispa
   "release_yml | jq -r .jobs.notes.if | grep -q '^always() && ' && release_yml | jq -r .jobs.notes.if | grep -qF \"needs.deploy.outputs.dry_run != 'true'\" && release_yml | jq -r .jobs.notes.if | grep -qF \"github.event_name == 'push'\""
 
 # The notes step, run as the workflow would, with a fake gh that holds one release.
+# The variables are meant for this subshell only (rollback_notes_step sets its own).
+# shellcheck disable=SC2030
 notes_step() { # RESULT FAILED_STEP BACKUP [PACKAGE_SHA256] [prerelease]
   T=$(mktemp -d); mkdir -p "$T/bin"
   release_yml | jq -r '.jobs.notes.steps[] | select(.name | test("Live deploy")) | .run' > "$T/notes.sh"
@@ -795,7 +917,77 @@ notes_step success "" live-20261103-120000-v1-0-0 "$NSUM" true
 check "notes: a pre-release gets no Live deploy section" '[ "$(cat $T/rc)" = 0 ] && [ ! -e $T/new-body ] && ! grep -q PATCH $T/gh.log'
 rm -rf "$T"
 
-echo "# 16. Guard rails"
+echo "# 17. rollback-live.yml (#12): guard rails, and its notes step with a fake gh"
+KWF="$ROOT/.github/workflows/rollback-live.yml"
+rollback_yml() {
+  python3 -c 'import json, sys, yaml; print(json.dumps(yaml.safe_load(open(sys.argv[1]))))' "$KWF" 2>/dev/null \
+    || yq -o=json '.' "$KWF"
+}
+check "rollback-live.yml: exists, name Rollback live" "grep -qx 'name: Rollback live' '$KWF'"
+check "rollback-live.yml: workflow_dispatch only" "[ \"\$(rollback_yml | jq -c '.on // .[\"true\"] | keys')\" = '[\"workflow_dispatch\"]' ]"
+check "rollback-live.yml: input dry_run, boolean, default true" \
+  "[ \"\$(rollback_yml | jq -c '(.on // .[\"true\"]).workflow_dispatch.inputs.dry_run | [.type, .default]')\" = '[\"boolean\",true]' ]"
+check "rollback-live.yml: no secrets.* or vars.*" "! grep -nE '(secrets|vars)\\.' '$KWF'"
+check "rollback-live.yml: permissions: {} at the top" "grep -qx 'permissions: {}' '$KWF'"
+check "rollback-live.yml: concurrency deploy-live (as release.yml), never cancelled" \
+  "[ \"\$(rollback_yml | jq -c .concurrency)\" = '{\"group\":\"deploy-live\",\"cancel-in-progress\":false}' ] && [ \"\$(release_yml | jq -c .concurrency)\" = \"\$(rollback_yml | jq -c .concurrency)\" ]"
+check "rollback-live.yml: actions pinned to a commit sha" "! grep -E '^\\s*-?\\s*uses:' '$KWF' | grep -vqE '@[0-9a-f]{40}( |\$)'"
+check "rollback-live.yml: deploy job only on v tags" "[ \"\$(rollback_yml | jq -r .jobs.deploy.if)\" = \"startsWith(github.ref, 'refs/tags/v')\" ]"
+check "rollback-live.yml: deploy job permissions contents read, id-token write, statuses read" \
+  "[ \"\$(rollback_yml | jq -c .jobs.deploy.permissions)\" = '{\"contents\":\"read\",\"id-token\":\"write\",\"statuses\":\"read\"}' ]"
+check "rollback-live.yml: first step checks deploy/live-actors of the tag" \
+  "rollback_yml | jq -r '.jobs.deploy.steps[0].run' | grep -q 'contents/deploy/live-actors?ref=\$GITHUB_SHA'"
+check "rollback-live.yml: checkout with full history, no persisted token" \
+  "[ \"\$(rollback_yml | jq -c '.jobs.deploy.steps[] | select(.uses // \"\" | startswith(\"actions/checkout@\")) | .with')\" = '{\"fetch-depth\":0,\"persist-credentials\":false}' ]"
+check "rollback-live.yml: calls deploy/deploy.sh --env live --rollback" "grep -q 'deploy/deploy.sh --env live --rollback \"\$RELEASE\" \$DRY_RUN_FLAG' '$KWF'"
+check "rollback-live.yml: dry_run input gives --dry-run" "grep -qF \"inputs.dry_run && '--dry-run' || ''\" '$KWF'"
+check "rollback-live.yml: notes job permissions contents write only, after every run on a tag" \
+  "[ \"\$(rollback_yml | jq -c .jobs.notes.permissions)\" = '{\"contents\":\"write\"}' ] && [ \"\$(rollback_yml | jq -r .jobs.notes.if)\" = \"always() && startsWith(github.ref, 'refs/tags/v')\" ]"
+
+# The rollback notes step, run as the workflow would, with a fake gh that holds one release.
+# Its own copies of notes_step's variables, in a subshell too.
+# shellcheck disable=SC2031
+rollback_notes_step() { # RESULT DRY_RUN BACKUP [body file]
+  T=$(mktemp -d); mkdir -p "$T/bin"
+  rollback_yml | jq -r '.jobs.notes.steps[] | select(.name | test("rollback")) | .run' > "$T/notes.sh"
+  jq -n --rawfile b "${4:-/dev/null}" '{id: 7, draft: false, prerelease: false, body: (if $b == "" then "## Staging proof\n\n- sha256: `abc`" else $b end)}' > "$T/release.json"
+  cat > "$T/bin/gh" <<'EOF'
+#!/usr/bin/env bash
+echo "gh $*" >> "$FAKE/gh.log"
+args=("$@")
+for i in "${!args[@]}"; do
+  [ "${args[$i]}" = -f ] && [[ "${args[$((i + 1))]}" == body=* ]] && printf '%s' "${args[$((i + 1))]#body=}" > "$FAKE/new-body"
+done
+case "$*" in
+  "api -X PATCH repos/romafederico/romafederico.com/releases/7"*) echo '{}';;
+  "api repos/romafederico/romafederico.com/releases/tags/v1.0.0"*) cat "$FAKE/release.json";;
+  *) echo "fake gh: unexpected $*" >&2; exit 1;;
+esac
+EOF
+  chmod +x "$T/bin/gh"
+  (export FAKE="$T" PATH="$T/bin:$PATH" GITHUB_STEP_SUMMARY="$T/summary.md" GITHUB_REPOSITORY=romafederico/romafederico.com \
+     RELEASE=v1.0.0 ACTOR=romafederico RESULT="$1" DRY_RUN="$2" BACKUP="$3" \
+     RUN_URL=https://github.com/romafederico/romafederico.com/actions/runs/9/attempts/1
+   bash -e "$T/notes.sh") > "$T/out.log" 2>&1
+  echo $? > "$T/rc"
+}
+rollback_notes_step success false live-20261103-120000-rollback-v1-0-0
+check "rollback notes: a Live rollbacks section below the old body" \
+  '[ "$(cat $T/rc)" = 0 ] && grep -qx "## Live rollbacks" $T/new-body && [ "$(head -n1 $T/new-body)" = "## Staging proof" ] || { cat $T/out.log; false; }'
+check "rollback notes: one line with time, actor, result, backup and run" \
+  'grep -qE -- "^- [0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9:]{8}Z rollback started by \`romafederico\`: \*\*success\*\*, backup \`live-20261103-120000-rollback-v1-0-0\`, https://github.com/romafederico/romafederico.com/actions/runs/9/attempts/1$" $T/new-body'
+check "rollback notes: also in the run summary" 'grep -q "rollback started by" $T/summary.md'
+BODY=$(mktemp); cp "$T/new-body" "$BODY"; rm -rf "$T"
+rollback_notes_step success true live-20261103-130000-rollback-v1-0-0 "$BODY"
+check "rollback notes: a second run adds a line, not a second heading; dry run marked" \
+  '[ "$(grep -cx "## Live rollbacks" $T/new-body)" = 1 ] && [ "$(grep -c "rollback.* started by" $T/new-body)" = 2 ] && grep -q "rollback (dry run) started by" $T/new-body'
+rm -rf "$T" "$BODY"
+rollback_notes_step failure "" ""
+check "rollback notes: a refused run is listed, no backup" \
+  'grep -q "rollback started by \`romafederico\`: \*\*failure\*\*, https://" $T/new-body'
+rm -rf "$T"
+
+echo "# 18. Guard rails"
 WF="$ROOT/.github/workflows/deploy-staging.yml"
 check "workflow exists" '[ -f "$WF" ]'
 check "workflow: no secrets.* or vars.*" "! grep -nE '(secrets|vars)\\.' '$WF'"
@@ -808,7 +1000,7 @@ check "workflow: concurrency deploy-staging, never cancelled" "grep -qx '  group
 check "workflow: calls deploy/deploy.sh --env staging" "grep -q 'deploy/deploy.sh --env staging --sha' '$WF'"
 check "workflow: sets staging/deploy" "grep -q 'context=staging/deploy' '$WF'"
 check "workflow: actions pinned to a commit sha" "! grep -E '^\\s*-?\\s*uses:' '$WF' | grep -vqE '@[0-9a-f]{40}( |\$)'"
-for f in deploy/deploy.sh deploy/smoke-test.sh "$WF" "$RWF"; do
+for f in deploy/deploy.sh deploy/smoke-test.sh "$WF" "$RWF" "$KWF"; do
   check "$f: no set -x / xtrace" "! grep -nE 'set -[a-wyz]*x|xtrace' '$ROOT/${f#"$ROOT/"}'"
 done
 check "smoke-test: credentials never on curl's command line (-u/--user)" "! grep -nE 'curl[^|]* (-u|--user) ' '$ROOT/deploy/smoke-test.sh'"
